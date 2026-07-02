@@ -1,6 +1,7 @@
 package com.leap.agent.api;
 
 import com.leap.agent.common.config.FileUploadProperties;
+import com.leap.agent.common.model.ApiResponse;
 import com.leap.agent.common.model.FileUploadRes;
 import com.leap.agent.domain.rag.VectorIndexService;
 import org.slf4j.Logger;
@@ -86,53 +87,11 @@ public class FileUploadController {
                     file.getSize()
             );
 
-            // 使用统一的API响应格式
-            ApiResponse<FileUploadRes> apiResponse = new ApiResponse<>();
-            apiResponse.setCode(200);
-            apiResponse.setMessage("success");
-            apiResponse.setData(response);
-            
-            return ResponseEntity.ok(apiResponse);
+            return ResponseEntity.ok(ApiResponse.success(response));
 
         } catch (IOException e) {
-            ApiResponse<String> errorResponse = new ApiResponse<>();
-            errorResponse.setCode(500);
-            errorResponse.setMessage("文件上传失败: " + e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(errorResponse);
-        }
-    }
-
-    /**
-     * 统一 API 响应格式
-     */
-    public static class ApiResponse<T> {
-        private int code;
-        private String message;
-        private T data;
-
-        public int getCode() {
-            return code;
-        }
-
-        public void setCode(int code) {
-            this.code = code;
-        }
-
-        public String getMessage() {
-            return message;
-        }
-
-        public void setMessage(String message) {
-            this.message = message;
-        }
-
-        public T getData() {
-            return data;
-        }
-
-        public void setData(T data) {
-            this.data = data;
+                    .body(ApiResponse.error("文件上传失败: " + e.getMessage()));
         }
     }
 

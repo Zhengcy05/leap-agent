@@ -10,6 +10,7 @@ import com.alibaba.cloud.ai.graph.streaming.OutputType;
 import com.alibaba.cloud.ai.graph.streaming.StreamingOutput;
 import lombok.Getter;
 import lombok.Setter;
+import com.leap.agent.common.model.ApiResponse;
 import com.leap.agent.domain.aiops.AiOpsService;
 import com.leap.agent.domain.chat.ChatService;
 import org.slf4j.Logger;
@@ -604,28 +605,4 @@ public class ChatController {
         }
     }
 
-
-    @Getter
-    @Setter
-    public static class ApiResponse<T> {
-        private int code;
-        private String message;
-        private T data;
-
-        public static <T> ApiResponse<T> success(T data) {
-            ApiResponse<T> response = new ApiResponse<>();
-            response.setCode(200);
-            response.setMessage("success");
-            response.setData(data);
-            return response;
-        }
-
-        public static <T> ApiResponse<T> error(String message) {
-            ApiResponse<T> response = new ApiResponse<>();
-            response.setCode(500);
-            response.setMessage(message);
-            return response;
-        }
-
-    }
 }

@@ -8,9 +8,11 @@ import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.alibaba.cloud.ai.graph.streaming.OutputType;
 import com.alibaba.cloud.ai.graph.streaming.StreamingOutput;
-import lombok.Getter;
-import lombok.Setter;
 import com.leap.agent.common.model.ApiResponse;
+import com.leap.agent.common.model.ChatRequest;
+import com.leap.agent.common.model.ChatResponse;
+import com.leap.agent.common.model.ClearRequest;
+import com.leap.agent.common.model.SessionInfoResponse;
 import com.leap.agent.domain.aiops.AiOpsService;
 import com.leap.agent.domain.chat.ChatSessionService;
 import com.leap.agent.domain.chat.ChatService;
@@ -368,72 +370,6 @@ public class ChatController {
         } catch (Exception e) {
             logger.error("获取会话信息失败", e);
             return ResponseEntity.ok(ApiResponse.error(e.getMessage()));
-        }
-    }
-
-    /**
-     * 聊天请求
-     */
-    @Setter
-    @Getter
-    public static class ChatRequest {
-        @com.fasterxml.jackson.annotation.JsonProperty(value = "Id")
-        @com.fasterxml.jackson.annotation.JsonAlias({"id", "ID"})
-        private String Id;
-        
-        @com.fasterxml.jackson.annotation.JsonProperty(value = "Question")
-        @com.fasterxml.jackson.annotation.JsonAlias({"question", "QUESTION"})
-        private String Question;
-
-    }
-
-    /**
-     * 清空会话请求
-     */
-    @Setter
-    @Getter
-    public static class ClearRequest {
-        @com.fasterxml.jackson.annotation.JsonProperty(value = "Id")
-        @com.fasterxml.jackson.annotation.JsonAlias({"id", "ID"})
-        private String Id;
-    }
-
-    // ==================== 内部类 ====================
-
-    /**
-     * 会话信息响应
-     */
-    @Setter
-    @Getter
-    public static class SessionInfoResponse {
-        private String sessionId;
-        private int messagePairCount;
-        private long createTime;
-    }
-
-    /**
-     * 统一聊天响应格式
-     * 适用于所有普通返回模式的对话接口
-     */
-    @Setter
-    @Getter
-    public static class ChatResponse {
-        private boolean success;
-        private String answer;
-        private String errorMessage;
-
-        public static ChatResponse success(String answer) {
-            ChatResponse response = new ChatResponse();
-            response.setSuccess(true);
-            response.setAnswer(answer);
-            return response;
-        }
-
-        public static ChatResponse error(String errorMessage) {
-            ChatResponse response = new ChatResponse();
-            response.setSuccess(false);
-            response.setErrorMessage(errorMessage);
-            return response;
         }
     }
 

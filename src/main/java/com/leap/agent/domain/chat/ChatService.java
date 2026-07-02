@@ -5,14 +5,9 @@ import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatModel;
 import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatOptions;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
-import com.leap.agent.runtime.tool.DateTimeTools;
-import com.leap.agent.runtime.tool.InternalDocsTools;
-import com.leap.agent.runtime.tool.QueryLogsTools;
-import com.leap.agent.runtime.tool.QueryMetricsTools;
+import com.leap.agent.runtime.tool.AgentToolRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -30,19 +25,7 @@ public class ChatService {
     private static final Logger logger = LoggerFactory.getLogger(ChatService.class);
 
     @Autowired
-    private InternalDocsTools internalDocsTools;
-
-    @Autowired
-    private DateTimeTools dateTimeTools;
-
-    @Autowired
-    private QueryMetricsTools queryMetricsTools;
-
-    @Autowired(required = false)  // Mock 模式下才注册，所以设置为 optional,真实环境通过mcp配置注入
-    private QueryLogsTools queryLogsTools;
-
-    @Autowired
-    private ToolCallbackProvider tools;
+    private AgentToolRegistry agentToolRegistry;
 
     @Value("${spring.ai.dashscope.api-key}")
     private String dashScopeApiKey;
@@ -117,35 +100,10 @@ public class ChatService {
     }
 
     /**
-     * 动态构建方法工具数组
-     * 根据 cls.mock-enabled 决定是否包含 QueryLogsTools
-     */
-    public Object[] buildMethodToolsArray() {
-        if (queryLogsTools != null) {
-            // Mock 模式：包含 QueryLogsTools
-            return new Object[]{dateTimeTools, internalDocsTools, queryMetricsTools, queryLogsTools};
-        } else {
-            // 真实模式：不包含 QueryLogsTools（由 MCP 提供日志查询功能）
-            return new Object[]{dateTimeTools, internalDocsTools, queryMetricsTools};
-        }
-    }
-
-    /**
-     * 获取工具回调列表，mcp服务提供的工具
-     */
-    public ToolCallback[] getToolCallbacks() {
-        return tools.getToolCallbacks();
-    }
-
-    /**
      * 记录可用工具列表：mcp服务提供的工具
      */
     public void logAvailableTools() {
-        ToolCallback[] toolCallbacks = tools.getToolCallbacks();
-        logger.info("可用工具列表:");
-        for (ToolCallback toolCallback : toolCallbacks) {
-            logger.info(">>> {}", toolCallback.getToolDefinition().name());
-        }
+        agentToolRegistry.logAvailableTools();
     }
 
     /**
@@ -159,9 +117,9 @@ public class ChatService {
                 .name("intelligent_assistant")
                 .model(chatModel)
                 .systemPrompt(systemPrompt)
-                .methodTools(buildMethodToolsArray())
+                .methodTools(agentToolRegistry.getMethodTools())
                 // 基于反射注入
-                .tools(getToolCallbacks())
+                .tools(agentToolRegistry.getToolCallbacks())
                 // 通过网络动态拉取过来的MCP外部扩展能力
                 .build();
     }

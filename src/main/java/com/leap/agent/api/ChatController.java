@@ -16,8 +16,6 @@ import com.leap.agent.domain.chat.ChatSessionService;
 import com.leap.agent.domain.chat.ChatService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -50,9 +48,6 @@ public class ChatController {
 
     @Autowired
     private SseEventSender sseEventSender;
-
-    @Autowired
-    private ToolCallbackProvider tools;
 
     private final ExecutorService executor = Executors.newCachedThreadPool();
 
@@ -292,12 +287,10 @@ public class ChatController {
                                 .build())
                         .build();
 
-                ToolCallback[] toolCallbacks = tools.getToolCallbacks();
-
                 sseEventSender.sendContent(emitter, "正在读取告警并拆解任务...\n");
                 
                 // 调用 AiOpsService 执行分析流程
-                Optional<OverAllState> overAllStateOptional = aiOpsService.executeAiOpsAnalysis(chatModel, toolCallbacks);
+                Optional<OverAllState> overAllStateOptional = aiOpsService.executeAiOpsAnalysis(chatModel);
 
                 if (overAllStateOptional.isEmpty()) {
                     sseEventSender.sendError(emitter, "多 Agent 编排未获取到有效结果");

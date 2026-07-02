@@ -5,14 +5,10 @@ import com.alibaba.cloud.ai.graph.OverAllState;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.alibaba.cloud.ai.graph.agent.flow.agent.SupervisorAgent;
 import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
-import com.leap.agent.runtime.tool.DateTimeTools;
-import com.leap.agent.runtime.tool.InternalDocsTools;
-import com.leap.agent.runtime.tool.QueryLogsTools;
-import com.leap.agent.runtime.tool.QueryMetricsTools;
+import com.leap.agent.runtime.tool.AgentToolRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.tool.ToolCallback;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -29,31 +25,21 @@ public class AiOpsService {
     private static final Logger logger = LoggerFactory.getLogger(AiOpsService.class);
 
     @Autowired
-    private DateTimeTools dateTimeTools;
-
-    @Autowired
-    private InternalDocsTools internalDocsTools;
-
-    @Autowired
-    private QueryMetricsTools queryMetricsTools;
-
-    @Autowired(required = false)  // Mock 模式下才注册
-    private QueryLogsTools queryLogsTools;
+    private AgentToolRegistry agentToolRegistry;
 
     /**
      * 执行 AI Ops 告警分析流程
      *
      * @param chatModel      大模型实例
-     * @param toolCallbacks  工具回调数组
      * @return 分析结果状态
      * @throws GraphRunnerException 如果 Agent 执行失败
      */
-    public Optional<OverAllState> executeAiOpsAnalysis(DashScopeChatModel chatModel, ToolCallback[] toolCallbacks) throws GraphRunnerException {
+    public Optional<OverAllState> executeAiOpsAnalysis(DashScopeChatModel chatModel) throws GraphRunnerException {
         logger.info("开始执行 AI Ops 多 Agent 协作流程");
 
         // 构建 Planner 和 Executor Agent
-        ReactAgent plannerAgent = buildPlannerAgent(chatModel, toolCallbacks);
-        ReactAgent executorAgent = buildExecutorAgent(chatModel, toolCallbacks);
+        ReactAgent plannerAgent = buildPlannerAgent(chatModel);
+        ReactAgent executorAgent = buildExecutorAgent(chatModel);
 
         // 构建 Supervisor Agent
         SupervisorAgent supervisorAgent = SupervisorAgent.builder()
@@ -97,14 +83,14 @@ public class AiOpsService {
     /**
      * 构建 Planner Agent
      */
-    private ReactAgent buildPlannerAgent(DashScopeChatModel chatModel, ToolCallback[] toolCallbacks) {
+    private ReactAgent buildPlannerAgent(DashScopeChatModel chatModel) {
         return ReactAgent.builder()
                 .name("planner_agent")
                 .description("负责拆解告警、规划与再规划步骤")
                 .model(chatModel)
                 .systemPrompt(buildPlannerPrompt())
-                .methodTools(buildMethodToolsArray())
-                .tools(toolCallbacks)
+                .methodTools(agentToolRegistry.getMethodTools())
+                .tools(agentToolRegistry.getToolCallbacks())
                 .outputKey("planner_plan")
                 // 输出键 将其输出的结果存到到全局共享内存
                 .build();
@@ -113,30 +99,16 @@ public class AiOpsService {
     /**
      * 构建 Executor Agent
      */
-    private ReactAgent buildExecutorAgent(DashScopeChatModel chatModel, ToolCallback[] toolCallbacks) {
+    private ReactAgent buildExecutorAgent(DashScopeChatModel chatModel) {
         return ReactAgent.builder()
                 .name("executor_agent")
                 .description("负责执行 Planner 的首个步骤并及时反馈")
                 .model(chatModel)
                 .systemPrompt(buildExecutorPrompt())
-                .methodTools(buildMethodToolsArray())
-                .tools(toolCallbacks)
+                .methodTools(agentToolRegistry.getMethodTools())
+                .tools(agentToolRegistry.getToolCallbacks())
                 .outputKey("executor_feedback")
                 .build();
-    }
-
-    /**
-     * 动态构建方法工具数组
-     * 根据 cls.mock-enabled 决定是否包含 QueryLogsTools
-     */
-    private Object[] buildMethodToolsArray() {
-        if (queryLogsTools != null) {
-            // Mock 模式：包含 QueryLogsTools
-            return new Object[]{dateTimeTools, internalDocsTools, queryMetricsTools, queryLogsTools};
-        } else {
-            // 真实模式：不包含 QueryLogsTools（由 MCP 提供日志查询功能）
-            return new Object[]{dateTimeTools, internalDocsTools, queryMetricsTools};
-        }
     }
 
     /**

@@ -1,0 +1,26 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alert.rules.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - localhost:9090
+
+  # If your Spring Boot app runs on the host machine, you can expose
+  # a Prometheus metrics endpoint later and uncomment this job.
+  #
+  # Example Spring endpoint:
+  # management.endpoints.web.exposure.include=prometheus
+  # management.endpoint.prometheus.access=read_only
+  # Then change metrics_path if needed.
+  #
+  # - job_name: leap-on-call-agent
+  #   metrics_path: /actuator/prometheus
+  #   static_configs:
+  #     - targets:
+  #         - host.docker.internal:9900

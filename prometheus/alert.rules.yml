@@ -1,0 +1,11 @@
+groups:
+  - name: leap-on-call-agent-demo
+    rules:
+      - alert: DemoQueryMetricsAlert
+        expr: vector(1)
+        for: 15s
+        labels:
+          severity: info
+          service: leap-on-call-agent
+        annotations:
+          description: "Demo alert for verifying QueryMetricsTools against Prometheus /api/v1/alerts."

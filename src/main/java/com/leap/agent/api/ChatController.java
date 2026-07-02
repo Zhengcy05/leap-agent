@@ -19,7 +19,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -48,6 +47,9 @@ public class ChatController {
 
     @Autowired
     private ChatSessionService chatSessionService;
+
+    @Autowired
+    private SseEventSender sseEventSender;
 
     @Autowired
     private ToolCallbackProvider tools;
@@ -144,7 +146,7 @@ public class ChatController {
         if (request.getQuestion() == null || request.getQuestion().trim().isEmpty()) {
             logger.warn("问题内容为空");
             try {
-                emitter.send(SseEmitter.event().name("message").data(SseMessage.error("问题内容不能为空"), MediaType.APPLICATION_JSON));
+                sseEventSender.sendError(emitter, "问题内容不能为空");
                 emitter.complete();
             } catch (IOException e) {
                 emitter.completeWithError(e);
@@ -201,9 +203,7 @@ public class ChatController {
                                         fullAnswerBuilder.append(chunk);
                                         
                                         // 实时发送到前端
-                                        emitter.send(SseEmitter.event()
-                                                .name("message")
-                                                .data(SseMessage.content(chunk), MediaType.APPLICATION_JSON));
+                                        sseEventSender.sendContent(emitter, chunk);
                                         
                                         logger.info("发送流式内容: {}", chunk);
                                     }
@@ -227,9 +227,7 @@ public class ChatController {
                         // 错误处理
                         logger.error("ReactAgent 流式对话失败", error);
                         try {
-                            emitter.send(SseEmitter.event()
-                                    .name("message")
-                                    .data(SseMessage.error(error.getMessage()), MediaType.APPLICATION_JSON));
+                            sseEventSender.sendError(emitter, error.getMessage());
                         } catch (IOException ex) {
                             logger.error("发送错误消息失败", ex);
                         }
@@ -248,9 +246,7 @@ public class ChatController {
                                 request.getId(), session.getMessagePairCount());
                             
                             // 发送完成标记
-                            emitter.send(SseEmitter.event()
-                                    .name("message")
-                                    .data(SseMessage.done(), MediaType.APPLICATION_JSON));
+                            sseEventSender.sendDone(emitter);
                             emitter.complete();
                         } catch (IOException e) {
                             logger.error("发送完成消息失败", e);
@@ -262,9 +258,7 @@ public class ChatController {
             } catch (Exception e) {
                 logger.error("ReactAgent 对话初始化失败", e);
                 try {
-                    emitter.send(SseEmitter.event()
-                            .name("message")
-                            .data(SseMessage.error(e.getMessage()), MediaType.APPLICATION_JSON));
+                    sseEventSender.sendError(emitter, e.getMessage());
                 } catch (IOException ex) {
                     logger.error("发送错误消息失败", ex);
                 }
@@ -300,14 +294,13 @@ public class ChatController {
 
                 ToolCallback[] toolCallbacks = tools.getToolCallbacks();
 
-                emitter.send(SseEmitter.event().name("message").data(SseMessage.content("正在读取告警并拆解任务...\n")));
+                sseEventSender.sendContent(emitter, "正在读取告警并拆解任务...\n");
                 
                 // 调用 AiOpsService 执行分析流程
                 Optional<OverAllState> overAllStateOptional = aiOpsService.executeAiOpsAnalysis(chatModel, toolCallbacks);
 
                 if (overAllStateOptional.isEmpty()) {
-                    emitter.send(SseEmitter.event().name("message")
-                            .data(SseMessage.error("多 Agent 编排未获取到有效结果"), MediaType.APPLICATION_JSON));
+                    sseEventSender.sendError(emitter, "多 Agent 编排未获取到有效结果");
                     emitter.complete();
                     return;
                 }
@@ -324,42 +317,30 @@ public class ChatController {
                     logger.info("提取到 Planner 最终报告，长度: {}", finalReportText.length());
                     
                     // 发送分隔线
-                    emitter.send(SseEmitter.event().name("message")
-                            .data(SseMessage.content("\n\n" + "=".repeat(60) + "\n"), MediaType.APPLICATION_JSON));
+                    sseEventSender.sendContent(emitter, "\n\n" + "=".repeat(60) + "\n");
                     
                     // 发送完整的告警分析报告
-                    emitter.send(SseEmitter.event().name("message")
-                            .data(SseMessage.content("📋 **告警分析报告**\n\n"), MediaType.APPLICATION_JSON));
+                    sseEventSender.sendContent(emitter, "📋 **告警分析报告**\n\n");
                     
-                    int chunkSize = 50;
-                    for (int i = 0; i < finalReportText.length(); i += chunkSize) {
-                        int end = Math.min(i + chunkSize, finalReportText.length());
-                        String chunk = finalReportText.substring(i, end);
-                        
-                        emitter.send(SseEmitter.event().name("message")
-                                .data(SseMessage.content(chunk), MediaType.APPLICATION_JSON));
-                    }
+                    sseEventSender.sendContentInChunks(emitter, finalReportText, 50);
                     
                     // 发送结束分隔线
-                    emitter.send(SseEmitter.event().name("message")
-                            .data(SseMessage.content("\n" + "=".repeat(60) + "\n\n"), MediaType.APPLICATION_JSON));
+                    sseEventSender.sendContent(emitter, "\n" + "=".repeat(60) + "\n\n");
                     
                     logger.info("最终报告已完整输出");
                 } else {
                     logger.warn("未能提取到 Planner 最终报告");
-                    emitter.send(SseEmitter.event().name("message")
-                            .data(SseMessage.content("⚠️ 多 Agent 流程已完成，但未能生成最终报告。"), MediaType.APPLICATION_JSON));
+                    sseEventSender.sendContent(emitter, "⚠️ 多 Agent 流程已完成，但未能生成最终报告。");
                 }
 
-                emitter.send(SseEmitter.event().name("message").data(SseMessage.done(), MediaType.APPLICATION_JSON));
+                sseEventSender.sendDone(emitter);
                 emitter.complete();
                 logger.info("AI Ops 多 Agent 编排完成");
 
             } catch (Exception e) {
                 logger.error("AI Ops 多 Agent 协作失败", e);
                 try {
-                    emitter.send(SseEmitter.event().name("message")
-                            .data(SseMessage.error("AI Ops 流程失败: " + e.getMessage()), MediaType.APPLICATION_JSON));
+                    sseEventSender.sendError(emitter, "AI Ops 流程失败: " + e.getMessage());
                 } catch (IOException ex) {
                     logger.error("发送错误消息失败", ex);
                 }
@@ -460,38 +441,6 @@ public class ChatController {
             response.setSuccess(false);
             response.setErrorMessage(errorMessage);
             return response;
-        }
-    }
-
-    /**
-     * 统一 SSE 流式消息格式
-     * 适用于所有 SSE 流式返回模式的对话接口
-     */
-    @Setter
-    @Getter
-    public static class SseMessage {
-        private String type;  // content: 内容块, error: 错误, done: 完成
-        private String data;
-
-        public static SseMessage content(String data) {
-            SseMessage message = new SseMessage();
-            message.setType("content");
-            message.setData(data);
-            return message;
-        }
-
-        public static SseMessage error(String errorMessage) {
-            SseMessage message = new SseMessage();
-            message.setType("error");
-            message.setData(errorMessage);
-            return message;
-        }
-
-        public static SseMessage done() {
-            SseMessage message = new SseMessage();
-            message.setType("done");
-            message.setData(null);
-            return message;
         }
     }
 

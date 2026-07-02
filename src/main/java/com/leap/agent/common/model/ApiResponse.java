@@ -3,6 +3,9 @@ package com.leap.agent.common.model;
 import lombok.Getter;
 import lombok.Setter;
 
+/**
+ * REST API 统一响应结构。
+ */
 @Getter
 @Setter
 public class ApiResponse<T> {

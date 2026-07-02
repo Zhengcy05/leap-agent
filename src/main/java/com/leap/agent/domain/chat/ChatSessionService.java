@@ -13,6 +13,9 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 
+/**
+ * 维护内存态聊天会话，并裁剪对话历史窗口。
+ */
 @Service
 public class ChatSessionService {
 
@@ -21,6 +24,9 @@ public class ChatSessionService {
 
     private final Map<String, ChatSession> sessions = new ConcurrentHashMap<>();
 
+    /**
+     * 获取已有会话；当客户端没有传入会话 ID 时创建一个新会话。
+     */
     public ChatSession getOrCreateSession(String sessionId) {
         String safeSessionId = sessionId;
         if (safeSessionId == null || safeSessionId.isEmpty()) {
@@ -29,6 +35,9 @@ public class ChatSessionService {
         return sessions.computeIfAbsent(safeSessionId, ChatSession::new);
     }
 
+    /**
+     * 查询已有会话但不自动创建，供管理类接口使用。
+     */
     public Optional<ChatSession> getSession(String sessionId) {
         if (sessionId == null || sessionId.isEmpty()) {
             return Optional.empty();
@@ -36,6 +45,9 @@ public class ChatSessionService {
         return Optional.ofNullable(sessions.get(sessionId));
     }
 
+    /**
+     * 单个聊天会话的线程安全可变状态。
+     */
     public static class ChatSession {
         private final String sessionId;
         private final List<Map<String, String>> messageHistory;
@@ -49,6 +61,9 @@ public class ChatSessionService {
             this.lock = new ReentrantLock();
         }
 
+        /**
+         * 追加一组用户/助手消息，并只保留最近的历史窗口。
+         */
         public void addMessage(String userQuestion, String aiAnswer) {
             lock.lock();
             try {
@@ -77,6 +92,9 @@ public class ChatSessionService {
             }
         }
 
+        /**
+         * 返回历史快照，避免调用方修改内部会话状态。
+         */
         public List<Map<String, String>> getHistory() {
             lock.lock();
             try {
@@ -86,6 +104,9 @@ public class ChatSessionService {
             }
         }
 
+        /**
+         * 清空当前会话保留的所有历史消息。
+         */
         public void clearHistory() {
             lock.lock();
             try {
@@ -96,6 +117,9 @@ public class ChatSessionService {
             }
         }
 
+        /**
+         * 统计完整的用户/助手消息对数量。
+         */
         public int getMessagePairCount() {
             lock.lock();
             try {

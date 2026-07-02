@@ -233,7 +233,7 @@ curl -N -X POST http://localhost:9900/api/chat_stream \
 
 SSE data 消息体：
 
-```json
+```jsonl
 {"type":"content","data":"..."}
 {"type":"error","data":"..."}
 {"type":"done","data":null}

@@ -233,7 +233,7 @@ curl -N -X POST http://localhost:9900/api/chat_stream \
 
 SSE data payloads use this shape:
 
-```json
+```jsonl
 {"type":"content","data":"..."}
 {"type":"error","data":"..."}
 {"type":"done","data":null}

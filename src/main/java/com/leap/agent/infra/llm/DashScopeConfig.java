@@ -1,12 +1,12 @@
 package com.leap.agent.infra.llm;
 
-import okhttp3.OkHttpClient;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.http.client.OkHttp3ClientHttpRequestFactory;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
+import java.net.http.HttpClient;
 import java.time.Duration;
 
 /**
@@ -25,16 +25,14 @@ public class DashScopeConfig {
      */
     @Bean
     public RestClient.Builder restClientBuilder() {
-        // 创建自定义的 OkHttpClient，设置超时时间
-        OkHttpClient okHttpClient = new OkHttpClient.Builder()
+        // 使用 JDK HttpClient，避免依赖已废弃的 OkHttp3 request factory。
+        HttpClient httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofMillis(timeout))
-                .readTimeout(Duration.ofMillis(timeout))
-                .writeTimeout(Duration.ofMillis(timeout))
-                .callTimeout(Duration.ofMillis(timeout))
                 .build();
+        JdkClientHttpRequestFactory requestFactory = new JdkClientHttpRequestFactory(httpClient);
+        requestFactory.setReadTimeout(Duration.ofMillis(timeout));
 
-        // 创建 RestClient.Builder 并配置 OkHttpClient
         return RestClient.builder()
-                .requestFactory(new OkHttp3ClientHttpRequestFactory(okHttpClient));
+                .requestFactory(requestFactory);
     }
 }

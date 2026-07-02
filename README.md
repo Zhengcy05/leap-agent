@@ -77,7 +77,9 @@ Leap Agent/
 │   ├── static/                        # Browser test UI
 │   ├── application.yml                # Local runtime configuration
 │   └── application-example.yml        # Example configuration
-├── aiops-docs/                        # Sample AIOps knowledge documents
+├── docs/
+│   ├── aiops/                         # Sample AIOps knowledge documents
+│   └── generated/                     # Generated analysis and reference docs
 ├── prometheus/                        # Prometheus config and alert rules
 └── vector-database.yml                # Milvus standalone compose file
 ```
@@ -257,7 +259,7 @@ curl http://localhost:9900/api/chat/session/session-1
 
 ```bash
 curl -X POST http://localhost:9900/api/upload \
-  -F "file=@aiops-docs/cpu_high_usage.md"
+  -F "file=@docs/aiops/cpu_high_usage.md"
 ```
 
 Supported extensions are controlled by `file.upload.allowed-extensions`.
@@ -286,7 +288,8 @@ The endpoint streams progress and the final Markdown report.
 - `SseEventSender` is the only place that formats SSE events.
 - `AgentToolRegistry` is the single place to add or remove tools exposed to agents.
 - `application-example.yml` mirrors the local configuration shape and can be used as a starting point.
-- `aiops-docs/` contains sample operational documents that can be uploaded into Milvus for internal-document retrieval.
+- `docs/aiops/` contains sample operational documents that can be uploaded into Milvus for internal-document retrieval.
+- `docs/generated/` contains generated analysis and reference documents, such as memory-system design notes for future integration.
 
 ## Verification
 

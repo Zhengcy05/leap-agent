@@ -77,7 +77,9 @@ Leap Agent/
 │   ├── static/                        # 浏览器测试 UI
 │   ├── application.yml                # 本地运行配置
 │   └── application-example.yml        # 配置示例
-├── aiops-docs/                        # 示例 AIOps 知识文档
+├── docs/
+│   ├── aiops/                         # 示例 AIOps 知识文档
+│   └── generated/                     # 生成的分析和参考文档
 ├── prometheus/                        # Prometheus 配置和告警规则
 └── vector-database.yml                # Milvus standalone compose 文件
 ```
@@ -257,7 +259,7 @@ curl http://localhost:9900/api/chat/session/session-1
 
 ```bash
 curl -X POST http://localhost:9900/api/upload \
-  -F "file=@aiops-docs/cpu_high_usage.md"
+  -F "file=@docs/aiops/cpu_high_usage.md"
 ```
 
 支持的文件扩展名由 `file.upload.allowed-extensions` 控制。
@@ -286,7 +288,8 @@ curl -N -X POST http://localhost:9900/api/ai_ops
 - `SseEventSender` 是 SSE 事件格式化和发送的唯一入口。
 - `AgentToolRegistry` 是增删 Agent 工具的统一入口。
 - `application-example.yml` 可作为配置模板。
-- `aiops-docs/` 提供可上传到 Milvus 的示例运维知识文档。
+- `docs/aiops/` 提供可上传到 Milvus 的示例运维知识文档。
+- `docs/generated/` 存放生成类分析和参考文档，例如后续接入记忆系统时使用的设计分析资料。
 
 ## 验证
 

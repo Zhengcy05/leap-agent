@@ -4,7 +4,7 @@
 # 配置变量
 SERVER_URL = http://localhost:9900
 UPLOAD_API = $(SERVER_URL)/api/upload
-DOCS_DIR = aiops-docs
+DOCS_DIR = docs/aiops
 HEALTH_CHECK_API = $(SERVER_URL)/milvus/health
 DOCKER_COMPOSE_FILE = vector-database.yml
 MILVUS_CONTAINER = milvus-standalone
@@ -31,7 +31,7 @@ help:
 	@echo "  make stop    - 停止 Spring Boot 服务"
 	@echo "  make restart - 重启 Spring Boot 服务"
 	@echo "  make check   - 检查服务器是否运行"
-	@echo "  make upload  - 上传 aiops-docs 目录下的所有文档"
+	@echo "  make upload  - 上传 docs/aiops 目录下的所有文档"
 	@echo "  make clean   - 清理临时文件"
 	@echo ""
 	@echo "使用示例："

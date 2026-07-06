@@ -43,7 +43,7 @@ public class PreferenceMemoryService {
     private final PreferenceRepository preferenceRepository;
     private final ObjectMapper objectMapper;
     private final MemoryProperties memoryProperties;
-    private final Map<String, String> preferences = new ConcurrentHashMap<>();
+    private final Map<String, PreferenceEntry> preferences = new ConcurrentHashMap<>();
     private final ExecutorService extractionExecutor = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "preference-llm-extractor");
         thread.setDaemon(true);
@@ -64,7 +64,7 @@ public class PreferenceMemoryService {
     @PostConstruct
     public void loadPersistedPreferences() {
         // 运行期以进程内缓存为准，启动时只需要回放一次持久化快照。
-        mergePreferences(preferenceRepository.loadAll(OWNER_ID));
+        mergePersistedEntries(preferenceRepository.loadAll(OWNER_ID), PreferenceSource.BOOTSTRAP);
         logger.info("已加载全局偏好 {} 项", preferences.size());
     }
 
@@ -73,7 +73,7 @@ public class PreferenceMemoryService {
      */
     public Map<String, String> applyRuleBasedPreferences(String message) {
         Map<String, String> extracted = extractRuleBasedPreferences(message);
-        persistPreferences(extracted);
+        persistPreferences(extracted, PreferenceSource.RULE);
         return extracted;
     }
 
@@ -101,7 +101,7 @@ public class PreferenceMemoryService {
         extractionExecutor.execute(() -> {
             try {
                 Map<String, String> extracted = extractPreferencesWithLlm(message);
-                persistPreferences(extracted);
+                persistPreferences(extracted, PreferenceSource.LLM);
             } catch (Exception e) {
                 logger.warn("异步偏好抽取失败: {}", e.getMessage());
             }
@@ -109,7 +109,22 @@ public class PreferenceMemoryService {
     }
 
     public Map<String, String> snapshot() {
-        return PreferenceKey.orderedView(new LinkedHashMap<>(preferences));
+        Map<String, String> snapshot = new LinkedHashMap<>();
+        for (Map.Entry<String, PreferenceEntry> entry : snapshotEntries().entrySet()) {
+            snapshot.put(entry.getKey(), entry.getValue().value());
+        }
+        return snapshot;
+    }
+
+    public Map<String, PreferenceEntry> snapshotEntries() {
+        Map<String, PreferenceEntry> ordered = new LinkedHashMap<>();
+        for (PreferenceKey key : PreferenceKey.values()) {
+            PreferenceEntry entry = preferences.get(key.key());
+            if (entry != null && entry.value() != null && !entry.value().isBlank()) {
+                ordered.put(key.key(), entry);
+            }
+        }
+        return ordered;
     }
 
     @PreDestroy
@@ -229,7 +244,7 @@ public class PreferenceMemoryService {
         }
     }
 
-    private void persistPreferences(Map<String, String> extracted) {
+    private void persistPreferences(Map<String, String> extracted, PreferenceSource source) {
         if (extracted == null || extracted.isEmpty()) {
             return;
         }
@@ -249,24 +264,47 @@ public class PreferenceMemoryService {
         }
 
         // 先合并到内存缓存，再回写最终值；这样 custom_rules 这类追加型字段不会被覆盖掉。
-        mergePreferences(normalized);
+        mergePreferences(normalized, source);
         normalized.keySet().forEach(key -> {
-            String persistedValue = preferences.get(key);
-            if (persistedValue != null && !persistedValue.isBlank()) {
-                preferenceRepository.save(OWNER_ID, key, persistedValue);
+            PreferenceEntry persistedEntry = preferences.get(key);
+            if (persistedEntry != null && persistedEntry.value() != null && !persistedEntry.value().isBlank()) {
+                preferenceRepository.save(OWNER_ID, persistedEntry);
             }
         });
     }
 
-    private void mergePreferences(Map<String, String> incoming) {
-        incoming.forEach((key, value) -> {
-            // custom_rules 允许累加；其余偏好以最新值覆盖，保持“默认约定”的当前版本。
-            if (PreferenceKey.CUSTOM_RULES.key().equals(key)) {
-                preferences.compute(key, (ignored, existing) -> mergeCustomRules(existing, value));
-            } else {
-                preferences.put(key, value);
-            }
+    private void mergePreferences(Map<String, String> incoming, PreferenceSource source) {
+        incoming.forEach((key, value) -> preferences.compute(key, (ignored, existing) -> mergeEntry(key, value, source, existing)));
+    }
+
+    private void mergePersistedEntries(Map<String, PreferenceEntry> incoming, PreferenceSource defaultSource) {
+        incoming.forEach((key, entry) -> {
+            PreferenceSource source = entry.source() == null ? defaultSource : entry.source();
+            preferences.compute(key, (ignored, existing) -> mergeEntry(key, entry.value(), source, existing, entry.updatedAt(), entry.version()));
         });
+    }
+
+    private PreferenceEntry mergeEntry(String key, String incomingValue, PreferenceSource source, PreferenceEntry existing) {
+        return mergeEntry(key, incomingValue, source, existing, System.currentTimeMillis(), -1L);
+    }
+
+    private PreferenceEntry mergeEntry(String key, String incomingValue, PreferenceSource source, PreferenceEntry existing,
+                                       long incomingUpdatedAt, long incomingVersion) {
+        if (incomingValue == null || incomingValue.isBlank()) {
+            return existing;
+        }
+
+        String mergedValue = PreferenceKey.CUSTOM_RULES.key().equals(key)
+                ? mergeCustomRules(existing != null ? existing.value() : null, incomingValue)
+                : incomingValue;
+
+        if (existing != null && mergedValue.equals(existing.value())) {
+            return existing;
+        }
+
+        long updatedAt = incomingUpdatedAt > 0 ? incomingUpdatedAt : System.currentTimeMillis();
+        long version = incomingVersion > 0 ? incomingVersion : (existing == null ? 1L : existing.version() + 1L);
+        return new PreferenceEntry(key, mergedValue, source, updatedAt, version);
     }
 
     private String mergeCustomRules(String existing, String incoming) {

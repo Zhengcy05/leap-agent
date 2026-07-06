@@ -7,7 +7,7 @@ import java.util.Map;
  */
 public interface PreferenceRepository {
 
-    void save(String ownerId, String key, String value);
+    void save(String ownerId, PreferenceEntry entry);
 
-    Map<String, String> loadAll(String ownerId);
+    Map<String, PreferenceEntry> loadAll(String ownerId);
 }

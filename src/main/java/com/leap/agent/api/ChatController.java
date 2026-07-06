@@ -421,6 +421,10 @@ public class ChatController {
 
             MemoryDebugResponse response = new MemoryDebugResponse(
                     preferenceMemoryService.snapshot(),
+                    preferenceMemoryService.snapshotEntries().entrySet().stream()
+                            .collect(LinkedHashMap::new,
+                                    (map, entry) -> map.put(entry.getKey(), MemoryDebugResponse.PreferenceEntryView.from(entry.getValue())),
+                                    LinkedHashMap::putAll),
                     sessions,
                     sessionDetail
             );

@@ -7,6 +7,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.leap.agent.common.config.MemoryProperties;
 import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ChatResponse;
@@ -18,6 +19,8 @@ import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -32,11 +35,20 @@ public class PreferenceMemoryService {
     private static final TypeReference<Map<String, String>> MAP_TYPE = new TypeReference<>() {
     };
     private static final Pattern SERVICE_PATTERN = Pattern.compile("\\b([a-zA-Z][a-zA-Z0-9-]*-service)\\b");
+    private static final Pattern PREFERENCE_SIGNAL_PATTERN = Pattern.compile(
+            "以后|默认|请始终|务必|通常|习惯|偏好|风格|语言|地域|区域|时间范围|近\\s*(1|24|7|30|一|二十四|七|三十)\\s*(小时|天)|ap-[a-z-]+",
+            Pattern.CASE_INSENSITIVE
+    );
 
     private final PreferenceRepository preferenceRepository;
     private final ObjectMapper objectMapper;
     private final MemoryProperties memoryProperties;
     private final Map<String, String> preferences = new ConcurrentHashMap<>();
+    private final ExecutorService extractionExecutor = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "preference-llm-extractor");
+        thread.setDaemon(true);
+        return thread;
+    });
 
     @Value("${spring.ai.dashscope.api-key}")
     private String dashScopeApiKey;
@@ -68,7 +80,7 @@ public class PreferenceMemoryService {
     /**
      * 回复完成后异步进行补充抽取。
      */
-    public void extractPreferencesAsync(String message) {
+    public void extractPreferencesAsync(String message, Map<String, String> ruleBasedExtracted) {
         if (!memoryProperties.getPreference().isAsyncLlmEnabled()) {
             return;
         }
@@ -79,22 +91,30 @@ public class PreferenceMemoryService {
             logger.debug("未配置有效 DashScope API Key，跳过异步偏好抽取");
             return;
         }
+        if (!shouldTriggerAsyncExtraction(message, ruleBasedExtracted)) {
+            logger.debug("当前消息缺少稳定偏好信号，跳过异步偏好抽取");
+            return;
+        }
 
         // 异步补充抽取只读取当前用户输入，避免把助手生成内容误写成稳定偏好。
-        Thread extractorThread = new Thread(() -> {
+        // 使用串行执行器保证写入顺序，避免高并发下同一份全局偏好被并发覆盖。
+        extractionExecutor.execute(() -> {
             try {
                 Map<String, String> extracted = extractPreferencesWithLlm(message);
                 persistPreferences(extracted);
             } catch (Exception e) {
                 logger.warn("异步偏好抽取失败: {}", e.getMessage());
             }
-        }, "preference-llm-extractor");
-        extractorThread.setDaemon(true);
-        extractorThread.start();
+        });
     }
 
     public Map<String, String> snapshot() {
         return PreferenceKey.orderedView(new LinkedHashMap<>(preferences));
+    }
+
+    @PreDestroy
+    public void shutdownExecutor() {
+        extractionExecutor.shutdown();
     }
 
     private Map<String, String> extractRuleBasedPreferences(String message) {
@@ -382,5 +402,19 @@ public class PreferenceMemoryService {
             return message;
         }
         return null;
+    }
+
+    private boolean shouldTriggerAsyncExtraction(String message, Map<String, String> ruleBasedExtracted) {
+        if (ruleBasedExtracted != null && !ruleBasedExtracted.isEmpty()) {
+            return true;
+        }
+
+        String normalizedMessage = message.trim();
+        if (normalizedMessage.length() > 120) {
+            return false;
+        }
+
+        return PREFERENCE_SIGNAL_PATTERN.matcher(normalizedMessage).find()
+                || SERVICE_PATTERN.matcher(normalizedMessage).find();
     }
 }

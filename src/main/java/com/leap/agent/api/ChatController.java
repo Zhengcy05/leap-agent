@@ -78,7 +78,7 @@ public class ChatController {
             ChatSessionService.ChatSession session = chatSessionService.getOrCreateSession(request.getId());
 
             // 同步规则抽取，保证本轮 prompt 立即生效
-            preferenceMemoryService.applyRuleBasedPreferences(request.getQuestion());
+            Map<String, String> ruleBasedPreferences = preferenceMemoryService.applyRuleBasedPreferences(request.getQuestion());
 
             // 获取历史消息
             ShortTermMemorySnapshot history = session.getHistorySnapshot();
@@ -104,7 +104,7 @@ public class ChatController {
             
             // 更新会话历史
             session.addMessage(request.getQuestion(), fullAnswer);
-            preferenceMemoryService.extractPreferencesAsync(request.getQuestion());
+            preferenceMemoryService.extractPreferencesAsync(request.getQuestion(), ruleBasedPreferences);
             logger.info("已更新会话历史 - SessionId: {}, 当前消息对数: {}", 
                 request.getId(), session.getMessagePairCount());
             
@@ -170,7 +170,7 @@ public class ChatController {
                 ChatSessionService.ChatSession session = chatSessionService.getOrCreateSession(request.getId());
 
                 // 同步规则抽取，保证本轮 prompt 立即生效
-                preferenceMemoryService.applyRuleBasedPreferences(request.getQuestion());
+                Map<String, String> ruleBasedPreferences = preferenceMemoryService.applyRuleBasedPreferences(request.getQuestion());
 
                 // 获取历史消息
                 ShortTermMemorySnapshot history = session.getHistorySnapshot();
@@ -252,7 +252,7 @@ public class ChatController {
                             
                             // 更新会话历史
                             session.addMessage(request.getQuestion(), fullAnswer);
-                            preferenceMemoryService.extractPreferencesAsync(request.getQuestion());
+                            preferenceMemoryService.extractPreferencesAsync(request.getQuestion(), ruleBasedPreferences);
                             logger.info("已更新会话历史 - SessionId: {}, 当前消息对数: {}", 
                                 request.getId(), session.getMessagePairCount());
                             

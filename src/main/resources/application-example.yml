@@ -67,6 +67,14 @@ rag:
   top-k: 3  # 检索返回的最相似文档数量
   model: "qwen3-max"  # 大语言模型名称
 
+# 记忆模块配置
+memory:
+  short-term:
+    max-window-size: 6
+  preference:
+    storage-path: ./data/preferences.json
+    async-llm-enabled: true
+
 # Prometheus 配置
 prometheus:
   base-url: http://localhost:9090

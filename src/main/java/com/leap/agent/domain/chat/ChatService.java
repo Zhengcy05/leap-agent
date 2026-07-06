@@ -5,6 +5,8 @@ import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatModel;
 import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatOptions;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
+import com.leap.agent.domain.memory.preference.PreferenceKey;
+import com.leap.agent.domain.memory.shortterm.ShortTermMemorySnapshot;
 import com.leap.agent.runtime.tool.AgentToolRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -12,7 +14,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import java.util.List;
 import java.util.Map;
 
 /**
@@ -66,37 +67,46 @@ public class ChatService {
 
     /**
      * 构建系统提示词（包含历史消息）
-     * @param history 历史消息列表
+     * @param shortTermMemory 短期记忆快照
+     * @param preferences 全局偏好快照
      * @return 完整的系统提示词
      */
-    public String buildSystemPrompt(List<Map<String, String>> history) {
+    public String buildSystemPrompt(ShortTermMemorySnapshot shortTermMemory, Map<String, String> preferences) {
         StringBuilder systemPromptBuilder = new StringBuilder();
-        
-        // 基础系统提示
+
+        // 先固定助手职责和工具边界，再注入偏好与短期记忆，减少模型在默认行为上的漂移。
         systemPromptBuilder.append("你是一个专业的智能助手，可以获取当前时间、查询天气信息、搜索内部文档知识库，以及查询 Prometheus 告警信息。\n");
         systemPromptBuilder.append("当用户询问时间相关问题时，使用 getCurrentDateTime 工具。\n");
         systemPromptBuilder.append("当用户需要查询公司内部文档、流程、最佳实践或技术指南时，使用 queryInternalDocs 工具。\n");
         systemPromptBuilder.append("当用户需要查询 Prometheus 告警、监控指标或系统告警状态时，使用 queryPrometheusAlerts 工具。\n");
-        systemPromptBuilder.append("当用户需要查询腾讯云日志时，请调用腾讯云mcp服务查询,默认查询地域ap-guangzhou,查询时间范围为近一个月。\n\n");
-        
-        // 添加历史消息
-        if (!history.isEmpty()) {
-            systemPromptBuilder.append("--- 对话历史 ---\n");
-            for (Map<String, String> msg : history) {
-                String role = msg.get("role");
-                String content = msg.get("content");
-                if ("user".equals(role)) {
-                    systemPromptBuilder.append("用户: ").append(content).append("\n");
-                } else if ("assistant".equals(role)) {
-                    systemPromptBuilder.append("助手: ").append(content).append("\n");
-                }
+        systemPromptBuilder.append("当用户需要查询腾讯云日志时，请调用腾讯云mcp服务查询；若【全局偏好】未指定，默认查询地域 ap-guangzhou，默认查询时间范围为近一个月。\n\n");
+
+        appendPreferenceSection(systemPromptBuilder, preferences);
+
+        if (shortTermMemory != null) {
+            String historySection = shortTermMemory.renderPromptSection();
+            if (!historySection.isBlank()) {
+                systemPromptBuilder.append(historySection).append("\n\n");
             }
-            systemPromptBuilder.append("--- 对话历史结束 ---\n\n");
         }
-        
-        systemPromptBuilder.append("请基于以上对话历史，回答用户的新问题。");
-        
+
+        systemPromptBuilder.append("请优先遵守【全局偏好】，并结合【短期记忆 / 对话历史】回答用户的新问题。");
+
         return systemPromptBuilder.toString();
+    }
+
+    private void appendPreferenceSection(StringBuilder builder, Map<String, String> preferences) {
+        if (preferences == null || preferences.isEmpty()) {
+            return;
+        }
+        builder.append("【全局偏好】\n");
+        for (PreferenceKey key : PreferenceKey.values()) {
+            String value = preferences.get(key.key());
+            if (value != null && !value.isBlank()) {
+                builder.append("- ").append(key.displayName()).append(": ").append(value).append("\n");
+            }
+        }
+        builder.append("\n");
     }
 
     /**

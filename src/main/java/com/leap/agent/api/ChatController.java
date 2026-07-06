@@ -12,10 +12,13 @@ import com.leap.agent.common.model.ApiResponse;
 import com.leap.agent.common.model.ChatRequest;
 import com.leap.agent.common.model.ChatResponse;
 import com.leap.agent.common.model.ClearRequest;
+import com.leap.agent.common.model.MemoryDebugResponse;
 import com.leap.agent.common.model.SessionInfoResponse;
 import com.leap.agent.domain.aiops.AiOpsService;
 import com.leap.agent.domain.chat.ChatSessionService;
 import com.leap.agent.domain.chat.ChatService;
+import com.leap.agent.domain.memory.preference.PreferenceMemoryService;
+import com.leap.agent.domain.memory.shortterm.ShortTermMemorySnapshot;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -49,6 +52,9 @@ public class ChatController {
     private ChatSessionService chatSessionService;
 
     @Autowired
+    private PreferenceMemoryService preferenceMemoryService;
+
+    @Autowired
     private SseEventSender sseEventSender;
 
     private final ExecutorService executor = Executors.newCachedThreadPool();
@@ -70,10 +76,13 @@ public class ChatController {
 
             // 获取或创建会话
             ChatSessionService.ChatSession session = chatSessionService.getOrCreateSession(request.getId());
-            
+
+            // 同步规则抽取，保证本轮 prompt 立即生效
+            preferenceMemoryService.applyRuleBasedPreferences(request.getQuestion());
+
             // 获取历史消息
-            List<Map<String, String>> history = session.getHistory();
-            logger.info("会话历史消息对数: {}", history.size() / 2);
+            ShortTermMemorySnapshot history = session.getHistorySnapshot();
+            logger.info("会话历史消息对数: {}", history.messagePairCount());
 
             // 创建 DashScope API 和 ChatModel
             DashScopeApi dashScopeApi = chatService.createDashScopeApi();
@@ -85,7 +94,7 @@ public class ChatController {
             logger.info("开始 ReactAgent 对话（支持自动工具调用）");
             
             // 构建系统提示词（包含历史消息）
-            String systemPrompt = chatService.buildSystemPrompt(history);
+            String systemPrompt = chatService.buildSystemPrompt(history, preferenceMemoryService.snapshot());
             
             // 创建 ReactAgent
             ReactAgent agent = chatService.createReactAgent(chatModel, systemPrompt);
@@ -95,6 +104,7 @@ public class ChatController {
             
             // 更新会话历史
             session.addMessage(request.getQuestion(), fullAnswer);
+            preferenceMemoryService.extractPreferencesAsync(request.getQuestion());
             logger.info("已更新会话历史 - SessionId: {}, 当前消息对数: {}", 
                 request.getId(), session.getMessagePairCount());
             
@@ -158,10 +168,13 @@ public class ChatController {
 
                 // 获取或创建会话
                 ChatSessionService.ChatSession session = chatSessionService.getOrCreateSession(request.getId());
-                
+
+                // 同步规则抽取，保证本轮 prompt 立即生效
+                preferenceMemoryService.applyRuleBasedPreferences(request.getQuestion());
+
                 // 获取历史消息
-                List<Map<String, String>> history = session.getHistory();
-                logger.info("ReactAgent 会话历史消息对数: {}", history.size() / 2);
+                ShortTermMemorySnapshot history = session.getHistorySnapshot();
+                logger.info("ReactAgent 会话历史消息对数: {}", history.messagePairCount());
 
                 // 创建 DashScope API 和 ChatModel
                 DashScopeApi dashScopeApi = chatService.createDashScopeApi();
@@ -173,7 +186,7 @@ public class ChatController {
                 logger.info("开始 ReactAgent 流式对话（支持自动工具调用）");
                 
                 // 构建系统提示词（包含历史消息）
-                String systemPrompt = chatService.buildSystemPrompt(history);
+                String systemPrompt = chatService.buildSystemPrompt(history, preferenceMemoryService.snapshot());
                 
                 // 创建 ReactAgent
                 ReactAgent agent = chatService.createReactAgent(chatModel, systemPrompt);
@@ -239,6 +252,7 @@ public class ChatController {
                             
                             // 更新会话历史
                             session.addMessage(request.getQuestion(), fullAnswer);
+                            preferenceMemoryService.extractPreferencesAsync(request.getQuestion());
                             logger.info("已更新会话历史 - SessionId: {}, 当前消息对数: {}", 
                                 request.getId(), session.getMessagePairCount());
                             
@@ -369,6 +383,50 @@ public class ChatController {
 
         } catch (Exception e) {
             logger.error("获取会话信息失败", e);
+            return ResponseEntity.ok(ApiResponse.error(e.getMessage()));
+        }
+    }
+
+    /**
+     * 查看短期记忆与全局偏好快照。
+     */
+    @GetMapping("/chat/memory")
+    public ResponseEntity<ApiResponse<MemoryDebugResponse>> getMemoryDebugInfo(
+            @RequestParam(value = "sessionId", required = false) String sessionId) {
+        try {
+            logger.info("收到获取记忆调试信息请求 - SessionId: {}", sessionId);
+
+            // 默认先返回所有活动 session 的摘要；只有明确指定 sessionId 时才展开明细。
+            List<MemoryDebugResponse.SessionMemorySummary> sessions = chatSessionService.listSessionSnapshots().stream()
+                    .map(snapshot -> new MemoryDebugResponse.SessionMemorySummary(
+                            snapshot.sessionId(),
+                            snapshot.memory().messagePairCount(),
+                            snapshot.createTime()))
+                    .toList();
+
+            MemoryDebugResponse.SessionMemoryDetail sessionDetail = null;
+            if (sessionId != null && !sessionId.isBlank()) {
+                Optional<ChatSessionService.ChatSession> sessionOptional = chatSessionService.getSession(sessionId);
+                if (sessionOptional.isEmpty()) {
+                    return ResponseEntity.ok(ApiResponse.error("会话不存在"));
+                }
+
+                ChatSessionService.ChatSessionSnapshot snapshot = sessionOptional.get().snapshot();
+                sessionDetail = new MemoryDebugResponse.SessionMemoryDetail(
+                        snapshot.sessionId(),
+                        snapshot.memory().messagePairCount(),
+                        snapshot.createTime(),
+                        snapshot.memory().messages());
+            }
+
+            MemoryDebugResponse response = new MemoryDebugResponse(
+                    preferenceMemoryService.snapshot(),
+                    sessions,
+                    sessionDetail
+            );
+            return ResponseEntity.ok(ApiResponse.success(response));
+        } catch (Exception e) {
+            logger.error("获取记忆调试信息失败", e);
             return ResponseEntity.ok(ApiResponse.error(e.getMessage()));
         }
     }

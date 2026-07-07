@@ -40,7 +40,7 @@ spring:
       client:
         enabled: true
         name: tencent-mcp-server
-        version: 1.0.0
+        version: 1.1.0
         request-timeout: 60s
         type: ASYNC
         sse:

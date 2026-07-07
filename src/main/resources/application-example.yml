@@ -40,7 +40,7 @@ spring:
       client:
         enabled: true
         name: tencent-mcp-server
-        version: 1.0.0
+        version: 1.1.0
         request-timeout: 60s
         type: ASYNC
         sse:
@@ -66,6 +66,14 @@ document:
 rag:
   top-k: 3  # 检索返回的最相似文档数量
   model: "qwen3-max"  # 大语言模型名称
+
+# 记忆模块配置
+memory:
+  short-term:
+    max-window-size: 6
+  preference:
+    storage-path: ./data/preferences.json
+    async-llm-enabled: true
 
 # Prometheus 配置
 prometheus:

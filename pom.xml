@@ -13,7 +13,7 @@
 
     <groupId>com.leap.agent</groupId>
     <artifactId>leap-agent</artifactId>
-    <version>1.0.0</version>
+    <version>1.1.0</version>
     <name>leap-agent</name>
     <description>基于 Spring Boot + AI Agent 的智能问答与运维系统</description>
 

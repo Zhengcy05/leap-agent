@@ -1,9 +1,9 @@
 /**
- * 三层记忆系统（待实现）。
+ * 记忆域。
  * <ul>
- *   <li>{@code shortterm} — 工作记忆：当前会话的上下文窗口</li>
- *   <li>{@code longterm} — 情节记忆：历史会话摘要与经验沉淀</li>
- *   <li>{@code semantic} — 语义记忆：向量知识库检索</li>
+ *   <li>{@code shortterm} — 已落地：按会话维护的短期工作记忆窗口</li>
+ *   <li>{@code preference} — 已落地：面向 oncallAgent 的全局偏好记忆</li>
+ *   <li>长期记忆 / 语义记忆 — 预留给后续阶段</li>
  * </ul>
  */
 package com.leap.agent.domain.memory;

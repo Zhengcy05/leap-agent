@@ -1,124 +1,142 @@
 # Leap Agent
 
-Leap Agent is a Spring Boot based AI assistant service for knowledge-base Q&A and AIOps investigation workflows. It combines DashScope chat and embedding models, Milvus vector search, local agent tools, and optional MCP tools into one backend service with REST and SSE APIs.
+Leap Agent 是一个基于 Spring Boot 的 AI 助手后端服务，面向知识库问答和 AIOps 排障分析场景。项目集成 DashScope 对话与向量模型、Milvus 向量检索、本地 Agent 工具，以及可选的 MCP 动态工具，通过 REST 和 SSE 接口对外提供能力。
 
-The project currently ships with a lightweight static web UI under `src/main/resources/static`, but the core value is the backend: document ingestion, vector retrieval, tool-augmented chat, session history, and automated alert-analysis report generation.
+项目当前包含一个轻量级静态测试页面，位于 `src/main/resources/static`。真正的核心能力在后端：文档上传、文档分片、向量化、向量检索、工具增强对话、会话历史管理，以及自动化告警分析报告生成。
+当前主 README 为中文版本；英文说明见 `README.en.md`。
 
-## Capabilities
+## 核心能力
 
-- Chat with tool calling: regular response and SSE streaming response are both supported.
-- Session history: recent user/assistant message pairs are retained in memory per session.
-- Knowledge retrieval: uploaded `txt` and `md` files are chunked, embedded, stored in Milvus, and searched by internal document tools.
-- AIOps workflow: a Supervisor Agent coordinates Planner and Executor agents to inspect alerts, metrics, logs, and internal runbooks.
-- Tool registry: local tools and MCP-provided dynamic tools are assembled through a central runtime registry.
-- Static test UI: the service exposes a browser UI from Spring Boot static resources.
+- 工具增强对话：支持普通响应和 SSE 流式响应。
+- 记忆系统 V1：按 session 维护短期记忆窗口，并维护面向整个 oncallAgent 的全局偏好记忆。
+- 知识库检索：上传的 `txt` 和 `md` 文件会被分片、向量化、写入 Milvus，并可被内部文档工具检索。
+- AIOps 工作流：Supervisor Agent 协调 Planner 和 Executor Agent，结合告警、指标、日志和内部文档生成分析报告。
+- 工具注册中心：通过统一的运行时注册类组装本地工具和 MCP 动态工具。
+- 记忆调试接口：通过 `/api/chat/memory` 查看全局偏好快照和活动 session 概览。
+- 静态测试页面：Spring Boot 直接托管一个浏览器测试 UI。
 
-## Runtime Architecture
+## 运行时架构
 
 ```text
 Client / Static UI
        |
        v
 api
-  ChatController          REST and SSE endpoints
-  FileUploadController    document upload entrypoint
-  MilvusHealthController  Milvus health probe
-  SseEventSender          shared SSE message sender
+  ChatController          REST 和 SSE 接口
+  FileUploadController    文档上传入口
+  MilvusHealthController  Milvus 健康检查
+  SseEventSender          SSE 消息发送封装
        |
        v
 domain
-  chat                    chat model creation, ReactAgent creation, session state
-  aiops                   Supervisor / Planner / Executor orchestration
-  rag                     chunking, embedding, indexing, vector search, RAG answer flow
+  chat                    对话模型创建、ReactAgent 创建、会话状态
+  memory                  短期记忆与全局偏好记忆
+  aiops                   Supervisor / Planner / Executor 编排
+  rag                     文档分片、向量化、索引、检索、RAG 生成
        |
        v
 runtime.tool
-  AgentToolRegistry       local method tools + MCP callbacks
-  DateTimeTools           current time tool
-  InternalDocsTools       Milvus-backed document lookup
-  QueryMetricsTools       Prometheus alert and metric lookup
-  QueryLogsTools          CLS mock log lookup / local log tool
+  AgentToolRegistry       本地方法工具 + MCP 工具回调
+  DateTimeTools           当前时间工具
+  InternalDocsTools       基于 Milvus 的内部文档检索
+  QueryMetricsTools       Prometheus 告警和指标查询
+  QueryLogsTools          CLS 风格日志主题和 Mock 日志查询
        |
        v
 infra
-  llm                     DashScope integration configuration
-  milvus                  Milvus client, schema, collection, indexes
+  llm                     DashScope 集成配置
+  milvus                  Milvus 客户端、集合 schema、索引
 ```
 
-## Source Layout
+## 工程结构
 
 ```text
 Leap Agent/
 ├── src/main/java/com/leap/agent/
-│   ├── LeapAgentApplication.java      # Spring Boot entrypoint
-│   ├── api/                           # HTTP API layer
-│   │   ├── ChatController.java        # Chat, streaming chat, AIOps endpoints
-│   │   ├── FileUploadController.java  # Knowledge document upload
-│   │   ├── MilvusHealthController.java# Milvus health probe
-│   │   └── SseEventSender.java        # Shared SSE sender
-│   ├── common/                        # Shared configuration and DTOs
-│   │   ├── config/                    # Web and property configuration
-│   │   └── model/                     # REST DTOs, SSE payloads, document chunks
-│   ├── domain/                        # Application domain services
-│   │   ├── aiops/                     # Supervisor / Planner / Executor workflow
-│   │   ├── chat/                      # Chat service and in-memory sessions
-│   │   ├── memory/                    # Reserved memory domain package
-│   │   └── rag/                       # Chunking, embedding, indexing, vector search
-│   ├── infra/                         # External infrastructure adapters
-│   │   ├── llm/                       # DashScope configuration
-│   │   └── milvus/                    # Milvus client, schema, collection utilities
-│   └── runtime/tool/                  # Agent tools and tool registry
-│       ├── AgentToolRegistry.java     # Local tools + MCP callbacks
-│       ├── DateTimeTools.java         # Date/time tool
-│       ├── InternalDocsTools.java     # Internal document retrieval
-│       ├── QueryMetricsTools.java     # Prometheus alert and metric lookup
-│       └── QueryLogsTools.java        # CLS-style log lookup
+│   ├── LeapAgentApplication.java      # Spring Boot 启动入口
+│   ├── api/                           # HTTP API 层
+│   │   ├── ChatController.java        # 对话、流式对话、AIOps 接口
+│   │   ├── FileUploadController.java  # 知识文档上传
+│   │   ├── MilvusHealthController.java# Milvus 健康检查
+│   │   └── SseEventSender.java        # SSE 消息发送封装
+│   ├── common/                        # 通用配置和 DTO
+│   │   ├── config/                    # Web 与属性配置
+│   │   └── model/                     # REST DTO、SSE 消息体、文档分片模型
+│   ├── domain/                        # 应用领域服务
+│   │   ├── aiops/                     # Supervisor / Planner / Executor 工作流
+│   │   ├── chat/                      # 对话服务和 session 短期记忆管理
+│   │   ├── memory/                    # 短期记忆、偏好记忆与仓储抽象
+│   │   └── rag/                       # 分片、向量化、索引、向量检索
+│   ├── infra/                         # 外部基础设施适配
+│   │   ├── llm/                       # DashScope 配置
+│   │   └── milvus/                    # Milvus 客户端、集合 schema、工具类
+│   └── runtime/tool/                  # Agent 工具与工具注册中心
+│       ├── AgentToolRegistry.java     # 本地工具 + MCP 工具回调
+│       ├── DateTimeTools.java         # 日期时间工具
+│       ├── InternalDocsTools.java     # 内部文档检索
+│       ├── QueryMetricsTools.java     # Prometheus 告警和指标查询
+│       └── QueryLogsTools.java        # CLS 风格日志查询
 ├── src/main/resources/
-│   ├── static/                        # Browser test UI
-│   ├── application.yml                # Local runtime configuration
-│   └── application-example.yml        # Example configuration
-├── aiops-docs/                        # Sample AIOps knowledge documents
-├── prometheus/                        # Prometheus config and alert rules
-└── vector-database.yml                # Milvus standalone compose file
+│   ├── static/                        # 浏览器测试 UI
+│   ├── application.yml                # 本地运行配置
+│   └── application-example.yml        # 配置示例
+├── docs/
+│   ├── aiops/                         # 示例 AIOps 知识文档
+│   ├── archive/                       # 阶段性设计与实现归档
+│   └── generated/                     # 生成的分析和参考文档
+├── prometheus/                        # Prometheus 配置和告警规则
+└── vector-database.yml                # Milvus standalone compose 文件
 ```
 
-## Main Request Flow
+## 主要请求链路
 
-### Chat
+### 对话
 
-1. `ChatController` receives `/api/chat` or `/api/chat_stream`.
-2. `ChatSessionService` loads or creates the session and provides recent history.
-3. `ChatService` builds the DashScope chat model, prompt, and ReactAgent.
-4. `AgentToolRegistry` injects local method tools and MCP callbacks.
-5. The response is returned directly or streamed through `SseEventSender`.
+1. `ChatController` 接收 `/api/chat` 或 `/api/chat_stream`。
+2. `PreferenceMemoryService` 先同步执行规则抽取，保证当前这句用户输入里的偏好可以立即进入本轮 prompt。
+3. `ChatSessionService` 加载或创建会话，并提供最近短期记忆快照。
+4. `ChatService` 组装基础系统提示、全局偏好、短期记忆历史段，随后创建 DashScope chat model 和 ReactAgent。
+5. `AgentToolRegistry` 注入本地方法工具和 MCP 工具回调。
+6. 回复完成后写入短期记忆，并异步执行 LLM 偏好补充抽取；失败只记日志，不影响本轮响应。
 
-### Document Upload And Retrieval
+### 文档上传与检索
 
-1. `FileUploadController` saves an uploaded `txt` or `md` file.
-2. `VectorIndexService` reads the file, deletes older chunks for the same source, chunks the document, embeds each chunk, and inserts vectors into Milvus.
-3. `InternalDocsTools` uses `VectorSearchService` to retrieve relevant chunks when an agent needs internal knowledge.
+1. `FileUploadController` 保存上传的 `txt` 或 `md` 文件。
+2. `VectorIndexService` 读取文件，删除同源旧分片，执行文档分片、向量化，并写入 Milvus。
+3. 当 Agent 需要内部知识时，`InternalDocsTools` 通过 `VectorSearchService` 检索相关分片。
 
 ### AIOps
 
-1. `/api/ai_ops` starts the AIOps flow.
-2. `AiOpsService` builds Planner and Executor ReactAgents and places them under a Supervisor Agent.
-3. Tools provide access to time, internal documents, Prometheus, and logs.
-4. The final Markdown report is streamed to the client.
+1. `/api/ai_ops` 启动 AIOps 流程。
+2. `AiOpsService` 构建 Planner 和 Executor ReactAgent，并交给 Supervisor Agent 调度。
+3. 工具层提供当前时间、内部文档、Prometheus 指标/告警和日志查询能力。
+4. 最终 Markdown 报告通过 SSE 流式返回。
 
-## Requirements
+## 记忆系统 V1
+
+- 短期记忆：`ChatSessionService` 以 `sessionId` 为粒度维护 `ShortTermMemory`，内部使用 typed message / snapshot，而不是裸 `List<Map<String, String>>`。
+- 历史裁剪：每个 session 的窗口大小由 `memory.short-term.max-window-size` 控制，只保留最近 N 轮完整问答。
+- 偏好记忆：`PreferenceMemoryService` 维护全局偏好缓存，通过 `PreferenceRepository` 抽象持久化，当前默认实现为本地 JSON 文件 `./data/preferences.json`。
+- 受控偏好键：当前只收敛到 `reply_language`、`reply_style`、`cls_region`、`time_range`、`service_scope`、`custom_rules` 六类固定 key。
+- 提取策略：构建 prompt 前先做规则同步抽取；回复结束后再基于用户输入做异步 LLM 补充抽取，避免把助手输出误写成稳定偏好。
+- Prompt 注入：`ChatService.buildSystemPrompt(...)` 当前按“基础系统提示 + 全局偏好 + 短期记忆 / 对话历史”三段拼装。
+- 清理语义：`/api/chat/clear` 只清指定 session 的短期记忆，不清全局偏好。
+- 观测接口：`GET /api/chat/memory` 返回全局偏好快照、偏好明细和活动 session 摘要；带 `sessionId` 参数时会额外返回该 session 的短期记忆明细。
+
+## 环境要求
 
 - Java 17
 - Maven 3.9+
-- Docker or another reachable Milvus instance
-- DashScope API key
-- Optional: Prometheus at `http://localhost:9090`
-- Optional: MCP SSE endpoint for Tencent CLS style log tools
+- Docker，或一个可访问的 Milvus 实例
+- DashScope API Key
+- 可选：本地 Prometheus，默认地址 `http://localhost:9090`
+- 可选：用于日志工具的 MCP SSE endpoint
 
-## Configuration
+## 配置
 
-The application reads configuration from `src/main/resources/application.yml`.
+应用读取 `src/main/resources/application.yml`。
 
-Important keys:
+关键配置如下：
 
 ```yaml
 server:
@@ -159,6 +177,13 @@ rag:
   top-k: 3
   model: qwen3-max
 
+memory:
+  short-term:
+    max-window-size: 6
+  preference:
+    storage-path: ./data/preferences.json
+    async-llm-enabled: true
+
 prometheus:
   base-url: http://localhost:9090
   mock-enabled: false
@@ -167,41 +192,41 @@ cls:
   mock-enabled: false
 ```
 
-Set the API key before starting the service:
+启动前设置 DashScope API Key：
 
 ```bash
 export DASHSCOPE_API_KEY=your-api-key
 ```
 
-## Local Startup
+## 本地启动
 
-Start Milvus:
+启动 Milvus：
 
 ```bash
 docker compose -f vector-database.yml up -d
 ```
 
-Start the Spring Boot service:
+启动 Spring Boot 服务：
 
 ```bash
 mvn spring-boot:run
 ```
 
-Open the static UI:
+打开静态测试页面：
 
 ```text
 http://localhost:9900
 ```
 
-Health check:
+健康检查：
 
 ```bash
 curl http://localhost:9900/milvus/health
 ```
 
-## API Reference
+## API 参考
 
-### Chat
+### 普通对话
 
 ```bash
 curl -X POST http://localhost:9900/api/chat \
@@ -209,7 +234,7 @@ curl -X POST http://localhost:9900/api/chat \
   -d '{"Id":"session-1","Question":"如何排查 CPU 使用率过高？"}'
 ```
 
-Response shape:
+响应结构：
 
 ```json
 {
@@ -223,7 +248,7 @@ Response shape:
 }
 ```
 
-### Streaming Chat
+### 流式对话
 
 ```bash
 curl -N -X POST http://localhost:9900/api/chat_stream \
@@ -231,7 +256,7 @@ curl -N -X POST http://localhost:9900/api/chat_stream \
   -d '{"Id":"session-1","Question":"结合内部文档给我一个处理步骤"}'
 ```
 
-SSE data payloads use this shape:
+SSE data 消息体：
 
 ```jsonl
 {"type":"content","data":"..."}
@@ -239,7 +264,7 @@ SSE data payloads use this shape:
 {"type":"done","data":null}
 ```
 
-### Clear Session
+### 清空会话
 
 ```bash
 curl -X POST http://localhost:9900/api/chat/clear \
@@ -247,56 +272,73 @@ curl -X POST http://localhost:9900/api/chat/clear \
   -d '{"Id":"session-1"}'
 ```
 
-### Session Info
+### 查询会话信息
 
 ```bash
 curl http://localhost:9900/api/chat/session/session-1
 ```
 
-### Upload Knowledge Document
+### 查看记忆快照
+
+```bash
+curl http://localhost:9900/api/chat/memory
+curl "http://localhost:9900/api/chat/memory?sessionId=session-1"
+```
+
+接口会返回：
+
+- 全局偏好键值快照
+- 带来源、更新时间、版本号的偏好明细
+- 当前活动 session 摘要列表
+- 指定 session 的短期记忆消息明细（仅在传入 `sessionId` 时返回）
+
+### 上传知识文档
 
 ```bash
 curl -X POST http://localhost:9900/api/upload \
-  -F "file=@aiops-docs/cpu_high_usage.md"
+  -F "file=@docs/aiops/cpu_high_usage.md"
 ```
 
-Supported extensions are controlled by `file.upload.allowed-extensions`.
+支持的文件扩展名由 `file.upload.allowed-extensions` 控制。
 
-### AIOps Report
+### AIOps 报告
 
 ```bash
 curl -N -X POST http://localhost:9900/api/ai_ops
 ```
 
-The endpoint streams progress and the final Markdown report.
+接口会流式返回执行进度和最终 Markdown 报告。
 
-## Built-In Agent Tools
+## 内置 Agent 工具
 
-| Tool class | Purpose |
+| 工具类 | 用途 |
 | --- | --- |
-| `DateTimeTools` | Returns current date and time. |
-| `InternalDocsTools` | Searches the Milvus-backed internal knowledge base. |
-| `QueryMetricsTools` | Queries Prometheus alerts and metric data, with mock support. |
-| `QueryLogsTools` | Provides log topic discovery and mock CLS-style log queries. |
-| `AgentToolRegistry` | Assembles local tools and MCP dynamic callbacks for agents. |
+| `DateTimeTools` | 返回当前日期时间。 |
+| `InternalDocsTools` | 检索 Milvus 中的内部知识库。 |
+| `QueryMetricsTools` | 查询 Prometheus 告警和指标，支持 Mock。 |
+| `QueryLogsTools` | 提供日志主题发现和 CLS 风格 Mock 日志查询。 |
+| `AgentToolRegistry` | 统一组装本地工具和 MCP 动态工具回调。 |
 
-## Development Notes
+## 开发说明
 
-- `ChatSessionService` stores session history in memory. Restarting the service clears sessions.
-- `SseEventSender` is the only place that formats SSE events.
-- `AgentToolRegistry` is the single place to add or remove tools exposed to agents.
-- `application-example.yml` mirrors the local configuration shape and can be used as a starting point.
-- `aiops-docs/` contains sample operational documents that can be uploaded into Milvus for internal-document retrieval.
+- `ChatSessionService` 使用内存保存每个 session 的短期记忆，服务重启后 session 历史会丢失。
+- `PreferenceMemoryService` 会把全局偏好持久化到本地 JSON 文件，服务重启后会自动回放到进程内缓存。
+- `SseEventSender` 是 SSE 事件格式化和发送的唯一入口。
+- `AgentToolRegistry` 是增删 Agent 工具的统一入口。
+- `application-example.yml` 可作为配置模板。
+- `docs/aiops/` 提供可上传到 Milvus 的示例运维知识文档。
+- `docs/archive/memory-system-v1.md` 记录了当前记忆系统的搭建边界与实现说明。
+- `docs/generated/` 存放生成类分析和参考文档，例如 AGI-saber 记忆模块分析资料。
 
-## Verification
+## 验证
 
-Compile the project:
+编译项目：
 
 ```bash
 mvn -DskipTests compile
 ```
 
-If the service is running locally, a quick smoke check is:
+如果本地服务已经启动，可以做一个简单 smoke check：
 
 ```bash
 curl http://localhost:9900/milvus/health
@@ -305,13 +347,14 @@ curl -X POST http://localhost:9900/api/chat \
   -d '{"Id":"smoke","Question":"现在是什么时间？"}'
 ```
 
-## Project Info
+## 项目信息
 
-- Author: Zhengcy05 <1825478405@qq.com>
-- Current version: v1.0.0
+- 作者：Zhengcy05 <1825478405@qq.com>
+- 当前版本：v1.1.0
 
-## Version History
+## 版本迭代记录
 
-| Version | Changes |
+| 版本 | 变更说明 |
 | --- | --- |
-| v1.0.0 | Established the current Spring Boot Agent architecture, including chat, SSE streaming, RAG document indexing, AIOps workflow, centralized tool registry, English README, and Chinese README. |
+| v1.1.0 | 落地 Memory Module V1：新增短期记忆、全局偏好记忆、本地 JSON 偏好持久化、`/api/chat/memory` 调试接口，并将中文 README 设为主 README。 |
+| v1.0.0 | 确立当前 Spring Boot Agent 工程结构，包含对话、SSE 流式输出、RAG 文档索引、AIOps 工作流、统一工具注册中心、英文 README 和中文 README。 |

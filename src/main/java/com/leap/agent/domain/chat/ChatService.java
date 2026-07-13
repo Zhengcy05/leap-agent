@@ -5,6 +5,7 @@ import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatModel;
 import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatOptions;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.alibaba.cloud.ai.graph.exception.GraphRunnerException;
+import com.leap.agent.domain.memory.preference.PreferenceItem;
 import com.leap.agent.domain.memory.preference.PreferenceKey;
 import com.leap.agent.domain.memory.shortterm.ShortTermMemorySnapshot;
 import com.leap.agent.runtime.tool.AgentToolRegistry;
@@ -15,6 +16,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.Map;
+import java.util.List;
 
 /**
  * 聊天服务
@@ -69,9 +71,12 @@ public class ChatService {
      * 构建系统提示词（包含历史消息）
      * @param shortTermMemory 短期记忆快照
      * @param preferences 全局偏好快照
+     * @param preferenceItems 开放偏好条目
      * @return 完整的系统提示词
      */
-    public String buildSystemPrompt(ShortTermMemorySnapshot shortTermMemory, Map<String, String> preferences) {
+    public String buildSystemPrompt(ShortTermMemorySnapshot shortTermMemory,
+                                    Map<String, String> preferences,
+                                    List<PreferenceItem> preferenceItems) {
         StringBuilder systemPromptBuilder = new StringBuilder();
 
         // 先固定助手职责和工具边界，再注入偏好与短期记忆，减少模型在默认行为上的漂移。
@@ -82,6 +87,7 @@ public class ChatService {
         systemPromptBuilder.append("当用户需要查询腾讯云日志时，请调用腾讯云mcp服务查询；若【全局偏好】未指定，默认查询地域 ap-guangzhou，默认查询时间范围为近一个月。\n\n");
 
         appendPreferenceSection(systemPromptBuilder, preferences);
+        appendPreferenceItemSection(systemPromptBuilder, preferenceItems);
 
         if (shortTermMemory != null) {
             String historySection = shortTermMemory.renderPromptSection();
@@ -90,7 +96,7 @@ public class ChatService {
             }
         }
 
-        systemPromptBuilder.append("请优先遵守【全局偏好】，并结合【短期记忆 / 对话历史】回答用户的新问题。");
+        systemPromptBuilder.append("请优先遵守【全局偏好】与【行为偏好 / 经验约定】，并结合【短期记忆 / 对话历史】回答用户的新问题。");
 
         return systemPromptBuilder.toString();
     }
@@ -105,6 +111,25 @@ public class ChatService {
             if (value != null && !value.isBlank()) {
                 builder.append("- ").append(key.displayName()).append(": ").append(value).append("\n");
             }
+        }
+        builder.append("\n");
+    }
+
+    private void appendPreferenceItemSection(StringBuilder builder, List<PreferenceItem> preferenceItems) {
+        if (preferenceItems == null || preferenceItems.isEmpty()) {
+            return;
+        }
+
+        // 这里接收的是记忆服务筛选后的 Top N，避免开放偏好无限膨胀进 system prompt。
+        builder.append("【行为偏好 / 经验约定】\n");
+        for (PreferenceItem item : preferenceItems) {
+            builder.append("- ")
+                    .append(item.content())
+                    .append("（")
+                    .append(item.category())
+                    .append(" / ")
+                    .append(item.scope())
+                    .append("）\n");
         }
         builder.append("\n");
     }

@@ -117,11 +117,12 @@ Leap Agent/
 - 短期记忆：`ChatSessionService` 以 `sessionId` 为粒度维护 `ShortTermMemory`，内部使用 typed message / snapshot，而不是裸 `List<Map<String, String>>`。
 - 历史裁剪：每个 session 的窗口大小由 `memory.short-term.max-window-size` 控制，只保留最近 N 轮完整问答。
 - 偏好记忆：`PreferenceMemoryService` 维护全局偏好缓存，通过 `PreferenceRepository` 抽象持久化，当前默认实现为本地 JSON 文件 `./data/preferences.json`。
-- 受控偏好键：当前只收敛到 `reply_language`、`reply_style`、`cls_region`、`time_range`、`service_scope`、`custom_rules` 六类固定 key。
-- 提取策略：构建 prompt 前先做规则同步抽取；回复结束后再基于用户输入做异步 LLM 补充抽取，避免把助手输出误写成稳定偏好。
-- Prompt 注入：`ChatService.buildSystemPrompt(...)` 当前按“基础系统提示 + 全局偏好 + 短期记忆 / 对话历史”三段拼装。
+- 固定槽位：`reply_language`、`reply_style`、`cls_region`、`time_range`、`service_scope` 继续承接可无损归一化的强 schema 偏好。
+- 开放偏好：LLM 异步抽取会把“先给结论再给步骤”这类长期行为约定写入 `PreferenceItem`，避免污染固定 key 或堆进 `custom_rules` 大字符串。
+- 提取策略：构建 prompt 前先做规则同步抽取；回复结束后再基于用户输入做异步 LLM 双通道抽取，避免把助手输出误写成稳定偏好。
+- Prompt 注入：`ChatService.buildSystemPrompt(...)` 当前按“基础系统提示 + 全局偏好 + 行为偏好 / 经验约定 + 短期记忆 / 对话历史”拼装。
 - 清理语义：`/api/chat/clear` 只清指定 session 的短期记忆，不清全局偏好。
-- 观测接口：`GET /api/chat/memory` 返回全局偏好快照、偏好明细和活动 session 摘要；带 `sessionId` 参数时会额外返回该 session 的短期记忆明细。
+- 观测接口：`GET /api/chat/memory` 返回全局偏好快照、偏好明细、开放偏好条目和活动 session 摘要；带 `sessionId` 参数时会额外返回该 session 的短期记忆明细。
 
 ## 环境要求
 
@@ -289,6 +290,7 @@ curl "http://localhost:9900/api/chat/memory?sessionId=session-1"
 
 - 全局偏好键值快照
 - 带来源、更新时间、版本号的偏好明细
+- 开放偏好条目，包含 category、content、scope、confidence、source、version、status
 - 当前活动 session 摘要列表
 - 指定 session 的短期记忆消息明细（仅在传入 `sessionId` 时返回）
 
@@ -356,5 +358,5 @@ curl -X POST http://localhost:9900/api/chat \
 
 | 版本 | 变更说明 |
 | --- | --- |
-| v1.1.0 | 落地 Memory Module V1：新增短期记忆、全局偏好记忆、本地 JSON 偏好持久化、`/api/chat/memory` 调试接口，并将中文 README 设为主 README。 |
+| v1.1.0 | 落地 Memory Module V1：新增短期记忆、固定槽位 + 开放条目的全局偏好记忆、本地 JSON 偏好持久化、`/api/chat/memory` 调试接口，并将中文 README 设为主 README。 |
 | v1.0.0 | 确立当前 Spring Boot Agent 工程结构，包含对话、SSE 流式输出、RAG 文档索引、AIOps 工作流、统一工具注册中心、英文 README 和中文 README。 |

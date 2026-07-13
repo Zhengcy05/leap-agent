@@ -14,7 +14,7 @@
 当前分支已经落地的能力有：
 
 1. 按 `sessionId` 管理短期记忆窗口
-2. 面向整个 `oncallAgent` 管理全局偏好记忆
+2. 面向整个 `oncallAgent` 管理全局偏好记忆，包含固定槽位和开放偏好条目
 3. 偏好记忆支持进程重启后的文件恢复
 4. 对话时把偏好和短期记忆一起注入系统提示词
 5. 提供独立的记忆调试接口用于观测当前状态
@@ -82,18 +82,42 @@ memory:
 
 当前偏好是整个 `oncallAgent` 共享的全局配置，不按用户隔离，也不按 session 隔离。
 
-### 受控 key 集
+### 固定槽位
 
-为了避免偏好文件无限发散，这次只允许收敛到固定 key：
+为了避免偏好文件无限发散，强 schema 偏好只允许收敛到固定 key：
 
 - `reply_language`
 - `reply_style`
 - `cls_region`
 - `time_range`
 - `service_scope`
-- `custom_rules`
 
-这些 key 由 `PreferenceKey` 统一定义，并在输出到 prompt 和调试接口时保持稳定顺序。
+这些 key 由 `PreferenceKey` 统一定义，并在输出到 prompt 和调试接口时保持稳定顺序。`custom_rules` 暂时保留兼容，但不再作为开放偏好的主要写入入口。
+
+### 开放偏好条目
+
+固定槽位只承接能无损归一化的偏好。无法无损落入固定 key、但有长期价值的行为约定，会写入 `PreferenceItem`。
+
+`PreferenceItem` 包含：
+
+- `id`
+- `category`
+- `content`
+- `scope`
+- `confidence`
+- `source`
+- `updatedAt`
+- `version`
+- `status`
+
+`category` 当前控制在：
+
+- `response_behavior`
+- `ops_methodology`
+- `tool_usage`
+- `domain_convention`
+
+例如“以后排查问题先给影响范围，再给根因猜测，最后给处理步骤”不会被硬塞进 `reply_style`，而是作为 `response_behavior` 类开放偏好保存。
 
 ### 数据结构
 
@@ -126,7 +150,7 @@ memory:
 
 ### 启动恢复
 
-服务启动时，`PreferenceMemoryService` 会从仓储中读取当前 owner 的所有偏好，并回放到进程内缓存中。运行期读取默认都走内存，避免每轮请求都访问文件。
+服务启动时，`PreferenceMemoryService` 会从仓储中读取当前 owner 的固定偏好和开放偏好条目，并回放到进程内缓存中。运行期读取默认都走内存，避免每轮请求都访问文件。
 
 ## 偏好提取策略
 
@@ -142,26 +166,29 @@ memory:
 - CLS 默认查广州
 - 默认看近 24 小时
 
-规则抽取主要识别：
+规则抽取主要识别强 schema 偏好：
 
 - 回复语言
 - 回复风格
 - 地域
 - 时间范围
 - 服务范围
-- 明显带有“以后 / 默认 / 请始终 / 务必”等信号的自定义规则
 
-同步抽取完成后会立刻写入内存缓存和持久化仓储。
+同步抽取完成后会立刻写入内存缓存和持久化仓储。开放式规则交给异步 LLM 抽取，避免同步规则把整句用户输入塞进 `custom_rules`。
 
 ### LLM 异步补充抽取
 
-回复完成后，系统会再基于当前用户输入发起一次低温 LLM 抽取，请模型只输出固定 key 集对应的 JSON 子集。
+回复完成后，系统会再基于当前用户输入发起一次低温 LLM 抽取，请模型输出双通道 JSON：
+
+- `structured_preferences`：能无损落入固定槽位的偏好
+- `preference_items`：不能无损落入固定槽位、但有长期价值的开放偏好
 
 这里有几个约束：
 
 1. 只读取用户输入，不读取助手回复
 2. 没有稳定偏好信号时跳过抽取
-3. 解析失败或调用失败只记日志，不影响本轮响应
+3. `preference_items` 只有 `confidence >= 0.7` 才写入
+4. 解析失败或调用失败只记日志，不影响本轮响应
 
 当前异步执行器是 `Executors.newSingleThreadExecutor(...)`，目的是先保证写入顺序，避免全局偏好被并发覆盖。
 
@@ -173,9 +200,10 @@ memory:
 
 1. 基础系统提示
 2. `【全局偏好】`
-3. `【短期记忆 / 对话历史】`
+3. `【行为偏好 / 经验约定】`
+4. `【短期记忆 / 对话历史】`
 
-最后再加一条总约束，要求模型优先遵守全局偏好，并结合短期记忆回答当前问题。
+最后再加一条总约束，要求模型优先遵守全局偏好和行为偏好，并结合短期记忆回答当前问题。开放偏好当前最多注入 5 条。
 
 这意味着当前 V1 的记忆读取方式仍然是 prompt 注入，而不是更复杂的 runtime context assembler。这个边界是有意保留的，目的是先把链路跑稳。
 
@@ -187,10 +215,11 @@ memory:
 2. 同步规则抽取偏好
 3. 读取短期记忆快照
 4. 读取全局偏好快照
-5. 构建系统提示词
-6. 执行对话
-7. 追加本轮问答到短期记忆
-8. 异步补充抽取偏好
+5. 读取开放偏好 Top N
+6. 构建系统提示词
+7. 执行对话
+8. 追加本轮问答到短期记忆
+9. 异步补充抽取偏好
 
 本次没有改动 chat 请求结构，所以外部接口保持兼容。
 
@@ -218,6 +247,7 @@ GET /api/chat/memory?sessionId=xxx
 
 - 全局偏好快照
 - 偏好明细视图
+- 开放偏好条目
 - 活动 session 摘要列表
 - 指定 session 的短期记忆明细
 
@@ -230,8 +260,8 @@ GET /api/chat/memory?sessionId=xxx
 1. 短期记忆和偏好记忆有明确领域边界
 2. 短期记忆使用 typed object，而不是裸 Map
 3. 偏好持久化保留 repository abstraction
-4. 偏好 key 集是受控的，不允许随意发散
-5. 偏好条目有来源、版本和更新时间
+4. 固定偏好 key 集是受控的，不允许随意发散
+5. 开放偏好通过 `PreferenceItem` 管理，有分类、范围、置信度、来源、版本和状态
 6. 启动时支持从持久化介质恢复
 7. 调试接口是独立视图，不污染原 session 查询接口
 
@@ -243,8 +273,9 @@ GET /api/chat/memory?sessionId=xxx
 
 1. 把偏好异步抽取从单线程执行器升级成受控线程池或事件队列
 2. 抽出独立的 memory context assembler，避免 `ChatService.buildSystemPrompt(...)` 继续膨胀
-3. 引入长期记忆及其召回策略
-4. 区分“进入 prompt 的记忆”和“进入工具默认值的记忆”
-5. 将 `PreferenceRepository` 切换到 PostgreSQL 或其他持久化后端
+3. 给开放偏好增加更强的语义去重和过期策略
+4. 引入长期记忆及其召回策略
+5. 区分“进入 prompt 的记忆”和“进入工具默认值的记忆”
+6. 将 `PreferenceRepository` 切换到 PostgreSQL 或其他持久化后端
 
 这份文档记录的是 V1 的实际落地状态，不代表后续阶段的最终形态。

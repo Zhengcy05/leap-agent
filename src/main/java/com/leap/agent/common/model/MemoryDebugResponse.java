@@ -2,6 +2,7 @@ package com.leap.agent.common.model;
 
 import com.leap.agent.domain.memory.shortterm.ShortTermMessage;
 import com.leap.agent.domain.memory.preference.PreferenceEntry;
+import com.leap.agent.domain.memory.preference.PreferenceItem;
 
 import java.util.List;
 import java.util.Map;
@@ -13,6 +14,7 @@ import java.util.Map;
 public record MemoryDebugResponse(
         Map<String, String> preferences,
         Map<String, PreferenceEntryView> preferenceDetails,
+        List<PreferenceItemView> preferenceItems,
         List<SessionMemorySummary> sessions,
         SessionMemoryDetail session
 ) {
@@ -29,6 +31,33 @@ public record MemoryDebugResponse(
                     entry.source() != null ? entry.source().name() : null,
                     entry.updatedAt(),
                     entry.version()
+            );
+        }
+    }
+
+    public record PreferenceItemView(
+            String id,
+            String category,
+            String content,
+            String scope,
+            double confidence,
+            String source,
+            long updatedAt,
+            long version,
+            String status
+    ) {
+        // 调试接口暴露治理元数据，方便人工审查开放偏好是否被正确抽取和合并。
+        public static PreferenceItemView from(PreferenceItem item) {
+            return new PreferenceItemView(
+                    item.id(),
+                    item.category(),
+                    item.content(),
+                    item.scope(),
+                    item.confidence(),
+                    item.source() != null ? item.source().name() : null,
+                    item.updatedAt(),
+                    item.version(),
+                    item.status() != null ? item.status().name() : null
             );
         }
     }

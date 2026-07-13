@@ -94,7 +94,11 @@ public class ChatController {
             logger.info("开始 ReactAgent 对话（支持自动工具调用）");
             
             // 构建系统提示词（包含历史消息）
-            String systemPrompt = chatService.buildSystemPrompt(history, preferenceMemoryService.snapshot());
+            String systemPrompt = chatService.buildSystemPrompt(
+                    history,
+                    preferenceMemoryService.snapshot(),
+                    preferenceMemoryService.promptPreferenceItems()
+            );
             
             // 创建 ReactAgent
             ReactAgent agent = chatService.createReactAgent(chatModel, systemPrompt);
@@ -186,7 +190,11 @@ public class ChatController {
                 logger.info("开始 ReactAgent 流式对话（支持自动工具调用）");
                 
                 // 构建系统提示词（包含历史消息）
-                String systemPrompt = chatService.buildSystemPrompt(history, preferenceMemoryService.snapshot());
+                String systemPrompt = chatService.buildSystemPrompt(
+                        history,
+                        preferenceMemoryService.snapshot(),
+                        preferenceMemoryService.promptPreferenceItems()
+                );
                 
                 // 创建 ReactAgent
                 ReactAgent agent = chatService.createReactAgent(chatModel, systemPrompt);
@@ -425,6 +433,9 @@ public class ChatController {
                             .collect(LinkedHashMap::new,
                                     (map, entry) -> map.put(entry.getKey(), MemoryDebugResponse.PreferenceEntryView.from(entry.getValue())),
                                     LinkedHashMap::putAll),
+                    preferenceMemoryService.snapshotPreferenceItems().stream()
+                            .map(MemoryDebugResponse.PreferenceItemView::from)
+                            .toList(),
                     sessions,
                     sessionDetail
             );

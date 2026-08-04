@@ -85,7 +85,7 @@ Leap Agent/
 │   ├── archive/                       # 阶段性设计与实现归档
 │   └── generated/                     # 生成的分析和参考文档
 ├── prometheus/                        # Prometheus 配置和告警规则
-└── vector-database.yml                # Milvus standalone compose 文件
+└── vector-database.yml                # Milvus + PostgreSQL + Elasticsearch 本地 compose 文件
 ```
 
 ## 主要请求链路
@@ -177,6 +177,15 @@ document:
 rag:
   top-k: 3
   model: qwen3-max
+  postgres:
+    jdbc-url: jdbc:postgresql://localhost:5432/leap_agent
+    username: leap
+    password: leap
+    init-schema: true
+  elasticsearch:
+    enabled: true
+    base-url: http://localhost:9200
+    index-name: leap_rag_chunks
 
 memory:
   short-term:
@@ -184,6 +193,13 @@ memory:
   preference:
     storage-path: ./data/preferences.json
     async-llm-enabled: true
+  long-term:
+    repository: postgres
+    postgres:
+      jdbc-url: jdbc:postgresql://localhost:5432/leap_agent
+      username: leap
+      password: leap
+      init-schema: true
 
 prometheus:
   base-url: http://localhost:9090
@@ -201,7 +217,7 @@ export DASHSCOPE_API_KEY=your-api-key
 
 ## 本地启动
 
-启动 Milvus：
+启动 Milvus、PostgreSQL、Elasticsearch 和 Prometheus：
 
 ```bash
 docker compose -f vector-database.yml up -d
@@ -316,7 +332,7 @@ curl -N -X POST http://localhost:9900/api/ai_ops
 | 工具类 | 用途 |
 | --- | --- |
 | `DateTimeTools` | 返回当前日期时间。 |
-| `InternalDocsTools` | 检索 Milvus 中的内部知识库。 |
+| `InternalDocsTools` | 通过 Milvus 语义召回、Elasticsearch 关键词召回和 PostgreSQL 回表检索内部知识库。 |
 | `QueryMetricsTools` | 查询 Prometheus 告警和指标，支持 Mock。 |
 | `QueryLogsTools` | 提供日志主题发现和 CLS 风格 Mock 日志查询。 |
 | `AgentToolRegistry` | 统一组装本地工具和 MCP 动态工具回调。 |
@@ -325,6 +341,8 @@ curl -N -X POST http://localhost:9900/api/ai_ops
 
 - `ChatSessionService` 使用内存保存每个 session 的短期记忆，服务重启后 session 历史会丢失。
 - `PreferenceMemoryService` 会把全局偏好持久化到本地 JSON 文件，服务重启后会自动回放到进程内缓存。
+- RAG 文档分片以 PostgreSQL 为事实源，Milvus/Elasticsearch 分别作为语义与关键词投影索引。
+- `LongTermMemoryService` 推荐使用 PostgreSQL 作为长期记忆事实源，Milvus 后续只作为可选向量索引层。
 - `SseEventSender` 是 SSE 事件格式化和发送的唯一入口。
 - `AgentToolRegistry` 是增删 Agent 工具的统一入口。
 - `application-example.yml` 可作为配置模板。

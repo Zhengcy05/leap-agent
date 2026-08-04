@@ -72,11 +72,13 @@ public class ChatService {
      * @param shortTermMemory 短期记忆快照
      * @param preferences 全局偏好快照
      * @param preferenceItems 开放偏好条目
+     * @param longTermMemorySection 按当前问题召回后的长期记忆片段
      * @return 完整的系统提示词
      */
     public String buildSystemPrompt(ShortTermMemorySnapshot shortTermMemory,
                                     Map<String, String> preferences,
-                                    List<PreferenceItem> preferenceItems) {
+                                    List<PreferenceItem> preferenceItems,
+                                    String longTermMemorySection) {
         StringBuilder systemPromptBuilder = new StringBuilder();
 
         // 先固定助手职责和工具边界，再注入偏好与短期记忆，减少模型在默认行为上的漂移。
@@ -89,6 +91,11 @@ public class ChatService {
         appendPreferenceSection(systemPromptBuilder, preferences);
         appendPreferenceItemSection(systemPromptBuilder, preferenceItems);
 
+        if (longTermMemorySection != null && !longTermMemorySection.isBlank()) {
+            // 长期记忆只注入召回出来的少量相关条目，避免 system prompt 被历史事实撑爆。
+            systemPromptBuilder.append(longTermMemorySection).append("\n\n");
+        }
+
         if (shortTermMemory != null) {
             String historySection = shortTermMemory.renderPromptSection();
             if (!historySection.isBlank()) {
@@ -96,7 +103,7 @@ public class ChatService {
             }
         }
 
-        systemPromptBuilder.append("请优先遵守【全局偏好】与【行为偏好 / 经验约定】，并结合【短期记忆 / 对话历史】回答用户的新问题。");
+        systemPromptBuilder.append("请优先遵守【全局偏好】与【行为偏好 / 经验约定】，参考【长期记忆 / 相关事实】，并结合【短期记忆 / 对话历史】回答用户的新问题。");
 
         return systemPromptBuilder.toString();
     }

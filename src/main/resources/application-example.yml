@@ -66,6 +66,17 @@ document:
 rag:
   top-k: 3  # 检索返回的最相似文档数量
   model: "qwen3-max"  # 大语言模型名称
+  postgres:
+    jdbc-url: jdbc:postgresql://localhost:5432/leap_agent
+    username: leap
+    password: leap
+    init-schema: true
+    chunk-table-name: rag_document_chunk
+  elasticsearch:
+    enabled: true
+    base-url: http://localhost:9200
+    index-name: leap_rag_chunks
+    timeout-millis: 5000
 
 # 记忆模块配置
 memory:
@@ -74,6 +85,26 @@ memory:
   preference:
     storage-path: ./data/preferences.json
     async-llm-enabled: true
+  long-term:
+    repository: postgres
+    storage-path: ./data/long-term-memory.json
+    postgres:
+      jdbc-url: jdbc:postgresql://localhost:5432/leap_agent
+      username: leap
+      password: leap
+      init-schema: true     # 自动初始化 检查数据表是否存在，无需手动建表 SQL
+      table-name: long_term_memory
+    async-extraction-enabled: true
+    async-llm-enabled: true
+    prompt-top-k: 4
+    min-recall-score: 0.42      # 召回门槛
+    min-confidence: 0.7         # 记忆入库准入门槛
+    dedup-threshold: 0.92       # 记忆入库查重阈值
+    similarity-threshold: 0.80  # 记忆合并阈值
+    ttl-days: 30                # 记忆最大存活生命周期
+    decay-rate: 0.995           # 记忆重要性衰减系数 定期执行衰减任务：importance = importance * 0.995。
+    min-importance: 0.30        # 记忆最低重要性底线：当记忆重要度衰减到 ≤ 0.30，这条记忆会被清理删除，不再保留。
+    consolidation-trigger-interval: 5   # 记忆合并触发周期
 
 # Prometheus 配置
 prometheus:

@@ -15,11 +15,16 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
- * 向量召回服务
- * 负责从 Milvus 中搜索相似向量
+ * RAG 混合召回服务。
+ *
+ * <p>职责边界：
+ * Milvus 负责语义向量召回，Elasticsearch 负责 BM25 关键词召回；
+ * 两者都只提供候选 chunk id，最终内容必须回 PostgreSQL 事实源读取。</p>
  */
 @Service
 public class VectorSearchService {
@@ -32,6 +37,12 @@ public class VectorSearchService {
     @Autowired
     private VectorEmbeddingService embeddingService;
 
+    @Autowired
+    private RagDocumentChunkRepository chunkRepository;
+
+    @Autowired
+    private ElasticsearchRagIndexService elasticsearchRagIndexService;
+
     /**
      * 搜索相似文档
      * 
@@ -40,57 +51,104 @@ public class VectorSearchService {
      * @return 搜索结果列表
      */
     public List<SearchResult> searchSimilarDocuments(String query, int topK) {
-        try {
-            logger.info("开始搜索相似文档, 查询: {}, topK: {}", query, topK);
+        logger.info("开始搜索相似文档, 查询: {}, topK: {}", query, topK);
 
-            // 1. 将查询文本向量化
+        Map<String, CandidateScore> candidates = new LinkedHashMap<>();
+
+        // 先各取 topK*2 作为候选池，给两路召回留一点重叠和互补空间。
+        // todo: AGI-saber 在这里还有 query rewrite、RRF 和 rerank；当前先用轻量加权合并跑通三层架构。
+        collectVectorCandidates(query, topK * 2, candidates);
+        collectKeywordCandidates(query, topK * 2, candidates);
+
+        if (candidates.isEmpty()) {
+            return List.of();
+        }
+
+        List<String> orderedIds = candidates.entrySet().stream()
+                .sorted((left, right) -> Double.compare(right.getValue().combinedScore(), left.getValue().combinedScore()))
+                .map(Map.Entry::getKey)
+                .toList();
+
+        // 关键一致性点：索引命中不等于事实可用。这里回 PG 只取 ACTIVE chunk，
+        // 能挡住 Milvus/ES 中尚未删除的陈旧候选，避免旧内容进入 prompt。
+        List<RagDocumentChunk> chunks = chunkRepository.findActiveByIds(orderedIds);
+        List<SearchResult> results = new ArrayList<>();
+        for (RagDocumentChunk chunk : chunks) {
+            CandidateScore score = candidates.get(chunk.getId());
+            if (score == null) {
+                continue;
+            }
+            SearchResult result = new SearchResult();
+            result.setId(chunk.getId());
+            result.setContent(chunk.getContent());
+            result.setScore((float) score.combinedScore());
+            result.setMetadata(String.valueOf(chunk.getMetadata()));
+            result.setSource(chunk.getSource());
+            result.setTitle(chunk.getTitle());
+            result.setVectorScore(score.vectorScore());
+            result.setKeywordScore(score.keywordScore());
+            results.add(result);
+            if (results.size() >= topK) {
+                break;
+            }
+        }
+
+        logger.info("搜索完成, 找到 {} 个相似文档", results.size());
+        return results;
+    }
+
+    private void collectVectorCandidates(String query, int topK, Map<String, CandidateScore> candidates) {
+        try {
             List<Float> queryVector = embeddingService.generateQueryVector(query);
             logger.debug("查询向量生成成功, 维度: {}", queryVector.size());
 
-            // 2. 构建搜索参数
             SearchParam searchParam = SearchParam.newBuilder()
                     .withCollectionName(MilvusConstants.MILVUS_COLLECTION_NAME)
                     .withVectorFieldName("vector")
                     .withVectors(Collections.singletonList(queryVector))
-                    .withTopK(topK)
+                    .withTopK(Math.max(1, topK))
                     .withMetricType(io.milvus.param.MetricType.L2)
-                    .withOutFields(List.of("id", "content", "metadata"))
+                    // Milvus 只取 id/metadata，不取 content；content 字段只是兼容旧 collection schema 的占位。
+                    .withOutFields(List.of("id", "metadata"))
                     .withParams("{\"nprobe\":10}")
-                    // 算法参数："nprobe":10 代表在底层的 IVF 聚类中，只扫描距离最近的 10 个簇
                     .build();
 
-            // 3. 执行搜索
             R<SearchResults> searchResponse = milvusClient.search(searchParam);
-
             if (searchResponse.getStatus() != 0) {
-                throw new RuntimeException("向量搜索失败: " + searchResponse.getMessage());
+                logger.warn("向量搜索失败: {}", searchResponse.getMessage());
+                return;
             }
 
-            // 4. 解析搜索结果
             SearchResultsWrapper wrapper = new SearchResultsWrapper(searchResponse.getData().getResults());
-            List<SearchResult> results = new ArrayList<>();
-
             for (int i = 0; i < wrapper.getRowRecords(0).size(); i++) {
-                SearchResult result = new SearchResult();
-                result.setId((String) wrapper.getIDScore(0).get(i).get("id"));
-                result.setContent((String) wrapper.getFieldData("content", 0).get(i));
-                result.setScore(wrapper.getIDScore(0).get(i).getScore()); // 分数越小越相似
-                
-                // 解析 metadata
-                Object metadataObj = wrapper.getFieldData("metadata", 0).get(i);
-                if (metadataObj != null) {
-                    result.setMetadata(metadataObj.toString());
+                String id = (String) wrapper.getIDScore(0).get(i).get("id");
+                float distance = wrapper.getIDScore(0).get(i).getScore();
+                if (id != null && !id.isBlank()) {
+                    CandidateScore current = candidates.getOrDefault(id, CandidateScore.empty());
+                    // L2 距离越小越相似，这里压到 (0,1]，方便和 ES 的 keyword score 做轻量融合。
+                    candidates.put(id, current.withVectorScore(1D / (1D + Math.max(0D, distance))));
                 }
-                
-                results.add(result);
             }
-
-            logger.info("搜索完成, 找到 {} 个相似文档", results.size());
-            return results;
-
         } catch (Exception e) {
-            logger.error("搜索相似文档失败", e);
-            throw new RuntimeException("搜索失败: " + e.getMessage(), e);
+            logger.warn("Milvus 向量召回失败，尝试仅使用 ES 关键词召回: {}", e.getMessage());
+        }
+    }
+
+    private void collectKeywordCandidates(String query, int topK, Map<String, CandidateScore> candidates) {
+        List<ElasticsearchRagIndexService.KeywordHit> hits = elasticsearchRagIndexService.searchKeyword(query, Math.max(1, topK));
+        // ES 返回的是 BM25 _score，绝对值会随 query 和语料分布变化；先按本次最大分归一化。
+        // todo: 更完整的 AGI-saber 路线是 RRF(rank based) + reranker，避免不同召回器分数尺度不可比。
+        double maxScore = hits.stream()
+                .mapToDouble(ElasticsearchRagIndexService.KeywordHit::score)
+                .max()
+                .orElse(0D);
+        for (ElasticsearchRagIndexService.KeywordHit hit : hits) {
+            if (hit.id() == null || hit.id().isBlank()) {
+                continue;
+            }
+            double normalizedScore = maxScore > 0D ? hit.score() / maxScore : hit.score();
+            CandidateScore current = candidates.getOrDefault(hit.id(), CandidateScore.empty());
+            candidates.put(hit.id(), current.withKeywordScore(normalizedScore));
         }
     }
 
@@ -103,7 +161,31 @@ public class VectorSearchService {
         private String id;
         private String content;
         private float score;
+        private double vectorScore;
+        private double keywordScore;
         private String metadata;
+        private String source;
+        private String title;
 
+    }
+
+    private record CandidateScore(double vectorScore, double keywordScore) {
+        static CandidateScore empty() {
+            return new CandidateScore(0D, 0D);
+        }
+
+        CandidateScore withVectorScore(double score) {
+            return new CandidateScore(Math.max(vectorScore, score), keywordScore);
+        }
+
+        CandidateScore withKeywordScore(double score) {
+            return new CandidateScore(vectorScore, Math.max(keywordScore, score));
+        }
+
+        double combinedScore() {
+            // 当前是能用的简化融合：语义召回更重，关键词召回补精确术语、服务名、错误码。
+            // 后续接 RRF/rerank 时可以只替换这里和候选排序，不影响 PG hydrate 事实源边界。
+            return vectorScore * 0.70D + keywordScore * 0.30D;
+        }
     }
 }

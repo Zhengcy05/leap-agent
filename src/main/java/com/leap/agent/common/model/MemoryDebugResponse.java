@@ -1,8 +1,9 @@
 package com.leap.agent.common.model;
 
-import com.leap.agent.domain.memory.shortterm.ShortTermMessage;
+import com.leap.agent.domain.memory.longterm.LongTermMemoryEntry;
 import com.leap.agent.domain.memory.preference.PreferenceEntry;
 import com.leap.agent.domain.memory.preference.PreferenceItem;
+import com.leap.agent.domain.memory.shortterm.ShortTermMessage;
 
 import java.util.List;
 import java.util.Map;
@@ -15,6 +16,7 @@ public record MemoryDebugResponse(
         Map<String, String> preferences,
         Map<String, PreferenceEntryView> preferenceDetails,
         List<PreferenceItemView> preferenceItems,
+        List<LongTermMemoryView> longTermMemories,
         List<SessionMemorySummary> sessions,
         SessionMemoryDetail session
 ) {
@@ -58,6 +60,40 @@ public record MemoryDebugResponse(
                     item.updatedAt(),
                     item.version(),
                     item.status() != null ? item.status().name() : null
+            );
+        }
+    }
+
+    public record LongTermMemoryView(
+            String id,
+            String sessionId,
+            String category,
+            String content,
+            List<String> tags,
+            double importance,
+            double confidence,
+            String source,
+            long createdAt,
+            long lastAccessed,
+            long version,
+            String status,
+            double score
+    ) {
+        public static LongTermMemoryView from(LongTermMemoryEntry entry) {
+            return new LongTermMemoryView(
+                    entry.getId(),
+                    entry.getSessionId(),
+                    entry.getCategory(),
+                    entry.getContent(),
+                    entry.getTags(),
+                    entry.getImportance(),
+                    entry.getConfidence(),
+                    entry.getSource() != null ? entry.getSource().name() : null,
+                    entry.getCreatedAt(),
+                    entry.getLastAccessed(),
+                    entry.getVersion(),
+                    entry.getStatus() != null ? entry.getStatus().name() : null,
+                    entry.getScore()
             );
         }
     }

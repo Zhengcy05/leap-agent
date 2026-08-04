@@ -1,6 +1,7 @@
 package com.leap.agent.common.model;
 
 import com.leap.agent.domain.memory.longterm.LongTermMemoryEntry;
+import com.leap.agent.domain.memory.longterm.Neo4jMemoryGraphClient;
 import com.leap.agent.domain.memory.preference.PreferenceEntry;
 import com.leap.agent.domain.memory.preference.PreferenceItem;
 import com.leap.agent.domain.memory.shortterm.ShortTermMessage;
@@ -77,9 +78,17 @@ public record MemoryDebugResponse(
             long lastAccessed,
             long version,
             String status,
-            double score
+            double score,
+            boolean graphLinked,
+            long graphInDegree,
+            long graphOutDegree
     ) {
         public static LongTermMemoryView from(LongTermMemoryEntry entry) {
+            return from(entry, null);
+        }
+
+        // 调试接口额外带上 Neo4j 图投影状态，方便判断图增强是否生效。
+        public static LongTermMemoryView from(LongTermMemoryEntry entry, Neo4jMemoryGraphClient.GraphStats graphStats) {
             return new LongTermMemoryView(
                     entry.getId(),
                     entry.getSessionId(),
@@ -93,7 +102,10 @@ public record MemoryDebugResponse(
                     entry.getLastAccessed(),
                     entry.getVersion(),
                     entry.getStatus() != null ? entry.getStatus().name() : null,
-                    entry.getScore()
+                    entry.getScore(),
+                    graphStats != null && graphStats.linked(),
+                    graphStats != null ? graphStats.inDegree() : 0L,
+                    graphStats != null ? graphStats.outDegree() : 0L
             );
         }
     }

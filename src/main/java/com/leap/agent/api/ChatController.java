@@ -18,6 +18,7 @@ import com.leap.agent.domain.aiops.AiOpsService;
 import com.leap.agent.domain.chat.ChatSessionService;
 import com.leap.agent.domain.chat.ChatService;
 import com.leap.agent.domain.memory.longterm.LongTermMemoryService;
+import com.leap.agent.domain.memory.longterm.Neo4jMemoryGraphClient;
 import com.leap.agent.domain.memory.preference.PreferenceMemoryService;
 import com.leap.agent.domain.memory.shortterm.ShortTermMemorySnapshot;
 import org.slf4j.Logger;
@@ -435,6 +436,7 @@ public class ChatController {
                         snapshot.memory().messages());
             }
 
+            Map<String, Neo4jMemoryGraphClient.GraphStats> graphStats = longTermMemoryService.graphStatsSnapshot();
             MemoryDebugResponse response = new MemoryDebugResponse(
                     preferenceMemoryService.snapshot(),
                     preferenceMemoryService.snapshotEntries().entrySet().stream()
@@ -445,7 +447,7 @@ public class ChatController {
                             .map(MemoryDebugResponse.PreferenceItemView::from)
                             .toList(),
                     longTermMemoryService.snapshot().stream()
-                            .map(MemoryDebugResponse.LongTermMemoryView::from)
+                            .map(entry -> MemoryDebugResponse.LongTermMemoryView.from(entry, graphStats.get(entry.getId())))
                             .toList(),
                     sessions,
                     sessionDetail

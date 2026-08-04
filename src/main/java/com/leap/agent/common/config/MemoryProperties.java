@@ -64,6 +64,7 @@ public class MemoryProperties {
         private String storagePath = "./data/long-term-memory.json";
 
         private final Postgres postgres = new Postgres();
+        private final Graph graph = new Graph();
 
         /**
          * 是否启用对话后的长期记忆异步抽取。
@@ -159,6 +160,93 @@ public class MemoryProperties {
 
             public void setTableName(String tableName) {
                 this.tableName = tableName;
+            }
+        }
+
+        @Getter
+        public static class Graph {
+            /**
+             * 是否启用 Neo4j 图增强。关闭后长期记忆退化为纯 PG/内存召回。
+             */
+            private boolean enabled = true;
+
+            /**
+             * Neo4j Bolt 地址。
+             */
+            private String uri = "bolt://localhost:7687";
+
+            private String username = "neo4j";
+
+            private String password = "leap";
+
+            /**
+             * 是否启动时幂等创建 Memory 节点约束/索引。
+             */
+            private boolean initSchema = true;
+
+            /**
+             * 新记忆与近期记忆超过该相似度时建立 SIMILAR_TO 边。
+             */
+            private double similarityEdgeThreshold = 0.80D;
+
+            /**
+             * 新增记忆时向前扫描多少条 active 记忆来建立相似边。
+             */
+            private int similarScanLimit = 50;
+
+            /**
+             * 召回 seed 通过图扩展的最大跳数。
+             */
+            private int neighborHops = 1;
+
+            /**
+             * 入度达到该值的记忆在过期淘汰时受保护。
+             */
+            private int centralityProtectInDegree = 3;
+
+            /**
+             * 图扩展命中的记忆进入排序时使用的兜底分数。
+             */
+            private double graphExpandedScore = 0.45D;
+
+            public void setEnabled(boolean enabled) {
+                this.enabled = enabled;
+            }
+
+            public void setUri(String uri) {
+                this.uri = uri;
+            }
+
+            public void setUsername(String username) {
+                this.username = username;
+            }
+
+            public void setPassword(String password) {
+                this.password = password;
+            }
+
+            public void setInitSchema(boolean initSchema) {
+                this.initSchema = initSchema;
+            }
+
+            public void setSimilarityEdgeThreshold(double similarityEdgeThreshold) {
+                this.similarityEdgeThreshold = similarityEdgeThreshold;
+            }
+
+            public void setSimilarScanLimit(int similarScanLimit) {
+                this.similarScanLimit = similarScanLimit;
+            }
+
+            public void setNeighborHops(int neighborHops) {
+                this.neighborHops = neighborHops;
+            }
+
+            public void setCentralityProtectInDegree(int centralityProtectInDegree) {
+                this.centralityProtectInDegree = centralityProtectInDegree;
+            }
+
+            public void setGraphExpandedScore(double graphExpandedScore) {
+                this.graphExpandedScore = graphExpandedScore;
             }
         }
     }

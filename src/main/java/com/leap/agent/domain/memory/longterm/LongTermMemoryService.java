@@ -51,6 +51,7 @@ public class LongTermMemoryService {
     private final MemoryProperties memoryProperties;
     private final VectorEmbeddingService vectorEmbeddingService;
     private final ObjectMapper objectMapper;
+    private final Neo4jMemoryGraphClient memoryGraphClient;
     private final Map<String, LongTermMemoryEntry> memories = new ConcurrentHashMap<>();
     private int newMemoryCountSinceConsolidation;
     private final ExecutorService extractionExecutor = Executors.newSingleThreadExecutor(runnable -> {
@@ -65,11 +66,13 @@ public class LongTermMemoryService {
     public LongTermMemoryService(LongTermMemoryRepository repository,
                                  MemoryProperties memoryProperties,
                                  VectorEmbeddingService vectorEmbeddingService,
-                                 ObjectMapper objectMapper) {
+                                 ObjectMapper objectMapper,
+                                 Neo4jMemoryGraphClient memoryGraphClient) {
         this.repository = repository;
         this.memoryProperties = memoryProperties;
         this.vectorEmbeddingService = vectorEmbeddingService;
         this.objectMapper = objectMapper;
+        this.memoryGraphClient = memoryGraphClient;
     }
 
     @PostConstruct
@@ -81,6 +84,7 @@ public class LongTermMemoryService {
                 memories.put(entry.getId(), entry);
             }
         }
+        syncGraphProjection(persisted);
         logger.info("已加载长期记忆 {} 条", memories.size());
     }
 
@@ -136,11 +140,24 @@ public class LongTermMemoryService {
                 .toList();
     }
 
+    /**
+     * 读取长期记忆图统计，用于调试接口展示。
+     */
+    public Map<String, Neo4jMemoryGraphClient.GraphStats> graphStatsSnapshot() {
+        List<String> memoryIds = snapshot().stream()
+                .map(LongTermMemoryEntry::getId)
+                .toList();
+        return memoryGraphClient.readStats(OWNER_ID, memoryIds);
+    }
+
     @PreDestroy
     public void shutdownExecutor() {
         extractionExecutor.shutdown();
     }
 
+    /**
+     * 按当前问题召回长期记忆，再用 Neo4j 做关联扩展。
+     */
     private synchronized List<LongTermMemoryEntry> recall(String query) {
         if (query == null || query.isBlank() || memories.isEmpty()) {
             return List.of();
@@ -166,10 +183,11 @@ public class LongTermMemoryService {
             }
         }
 
-        return scored.stream()
+        List<LongTermMemoryEntry> seedItems = scored.stream()
                 .sorted(Comparator.comparingDouble(LongTermMemoryEntry::getScore).reversed())
                 .limit(Math.max(1, memoryProperties.getLongTerm().getPromptTopK()))
                 .toList();
+        return expandRecallWithGraph(seedItems, now);
     }
 
     private void writeTurn(String sessionId, String userQuestion, String assistantAnswer) {
@@ -310,15 +328,20 @@ public class LongTermMemoryService {
         }
     }
 
+    /**
+     * 新增或合并一条长期记忆，并同步图投影。
+     */
     private boolean upsertCandidate(MemoryCandidate candidate) {
         List<Float> embedding = buildEmbedding(candidate.content());
         LongTermMemoryEntry duplicate = findDuplicate(candidate, embedding);
         long now = System.currentTimeMillis();
         if (duplicate != null) {
             mergeIntoExisting(duplicate, candidate, embedding, now);
+            memoryGraphClient.upsertMemory(OWNER_ID, duplicate);
             return true;
         }
 
+        String previousMemoryId = findLatestActiveMemoryId();
         LongTermMemoryEntry entry = new LongTermMemoryEntry(
                 UUID.randomUUID().toString(),
                 candidate.sessionId(),
@@ -335,6 +358,7 @@ public class LongTermMemoryService {
         );
         memories.put(entry.getId(), entry);
         newMemoryCountSinceConsolidation++;
+        indexNewMemoryInGraph(entry, previousMemoryId);
         logger.info("新增长期记忆: [{}] {}", entry.getCategory(), entry.getContent());
         return true;
     }
@@ -453,6 +477,9 @@ public class LongTermMemoryService {
         return changed;
     }
 
+    /**
+     * 合并同类别中高度相似的长期记忆。
+     */
     private boolean mergeSimilarMemories(long now) {
         double dedupThreshold = memoryProperties.getLongTerm().getDedupThreshold();
         double similarityThreshold = memoryProperties.getLongTerm().getSimilarityThreshold();
@@ -477,12 +504,16 @@ public class LongTermMemoryService {
                 if (similarity >= dedupThreshold) {
                     mergeDuplicateIntoLeft(left, right, now);
                     memories.remove(right.getId());
+                    memoryGraphClient.upsertMemory(OWNER_ID, left);
+                    memoryGraphClient.deleteMemory(OWNER_ID, right.getId());
                     removedIds.add(right.getId());
                     changed = true;
                 } else if (similarity >= similarityThreshold) {
                     LongTermMemoryEntry merged = mergeEntries(left, right, now);
                     memories.put(merged.getId(), merged);
                     memories.remove(right.getId());
+                    memoryGraphClient.upsertMemory(OWNER_ID, merged);
+                    memoryGraphClient.deleteMemory(OWNER_ID, right.getId());
                     removedIds.add(right.getId());
                     changed = true;
                 }
@@ -509,6 +540,9 @@ public class LongTermMemoryService {
         left.setVersion(left.getVersion() + 1L);
     }
 
+    /**
+     * 淘汰超过 TTL 且重要性低的记忆，图中心节点会被保护。
+     */
     private boolean expireLowValueMemories(long now) {
         int ttlDays = memoryProperties.getLongTerm().getTtlDays();
         if (ttlDays <= 0) {
@@ -518,16 +552,163 @@ public class LongTermMemoryService {
         boolean changed = false;
         double minImportance = memoryProperties.getLongTerm().getMinImportance();
         long ttlMillis = ttlDays * 86_400_000L;
+        List<LongTermMemoryEntry> expiryCandidates = new ArrayList<>();
         for (LongTermMemoryEntry entry : new ArrayList<>(memories.values())) {
             if (!entry.isActive()) {
                 continue;
             }
             if (now - entry.getCreatedAt() > ttlMillis && entry.getImportance() < minImportance) {
-                memories.remove(entry.getId());
+                expiryCandidates.add(entry);
+            }
+        }
+        Set<String> protectedIds = graphProtectedMemoryIds(expiryCandidates);
+        for (LongTermMemoryEntry entry : expiryCandidates) {
+            if (protectedIds.contains(entry.getId())) {
+                continue;
+            }
+            if (memories.remove(entry.getId()) != null) {
+                memoryGraphClient.deleteMemory(OWNER_ID, entry.getId());
                 changed = true;
             }
         }
         return changed;
+    }
+
+    /**
+     * 根据已加载的权威记忆快照重建 Neo4j 图节点和时序边。
+     */
+    private void syncGraphProjection(List<LongTermMemoryEntry> persisted) {
+        if (!memoryGraphClient.isAvailable() || persisted == null || persisted.isEmpty()) {
+            return;
+        }
+
+        List<LongTermMemoryEntry> activeEntries = persisted.stream()
+                .filter(entry -> entry != null && entry.isActive() && entry.getId() != null && !entry.getId().isBlank())
+                .sorted(Comparator.comparingLong(LongTermMemoryEntry::getCreatedAt))
+                .toList();
+        String previousMemoryId = null;
+        for (LongTermMemoryEntry entry : activeEntries) {
+            memoryGraphClient.upsertMemory(OWNER_ID, entry);
+            if (previousMemoryId != null) {
+                memoryGraphClient.addFollows(OWNER_ID, previousMemoryId, entry.getId());
+            }
+            previousMemoryId = entry.getId();
+        }
+        logger.info("已同步长期记忆图投影 {} 个节点", activeEntries.size());
+    }
+
+    /**
+     * 基于 seed 记忆从 Neo4j 扩展邻居，并回内存快照过滤 active 条目。
+     */
+    private List<LongTermMemoryEntry> expandRecallWithGraph(List<LongTermMemoryEntry> seedItems, long now) {
+        if (!memoryGraphClient.isAvailable() || seedItems == null || seedItems.isEmpty()) {
+            return seedItems == null ? List.of() : seedItems;
+        }
+
+        int topK = Math.max(1, memoryProperties.getLongTerm().getPromptTopK());
+        int hops = memoryProperties.getLongTerm().getGraph().getNeighborHops();
+        List<String> seedIds = seedItems.stream()
+                .map(LongTermMemoryEntry::getId)
+                .toList();
+        List<String> expandedIds = memoryGraphClient.expandMemoryIds(OWNER_ID, seedIds, hops);
+        if (expandedIds.isEmpty()) {
+            return seedItems;
+        }
+
+        Set<String> seenIds = new LinkedHashSet<>(seedIds);
+        List<LongTermMemoryEntry> combined = new ArrayList<>(seedItems);
+        for (String expandedId : expandedIds) {
+            if (!seenIds.add(expandedId)) {
+                continue;
+            }
+            LongTermMemoryEntry entry = memories.get(expandedId);
+            if (entry == null || !entry.isActive() || entry.getContent() == null || entry.getContent().isBlank()) {
+                continue;
+            }
+            entry.setScore(memoryProperties.getLongTerm().getGraph().getGraphExpandedScore());
+            entry.setLastAccessed(now);
+            combined.add(entry);
+        }
+
+        return combined.stream()
+                .sorted(Comparator.comparingDouble(LongTermMemoryEntry::getScore).reversed())
+                .limit(topK)
+                .toList();
+    }
+
+    /**
+     * 找出当前最新的 active 记忆，用于建立 FOLLOWS 边。
+     */
+    private String findLatestActiveMemoryId() {
+        return memories.values().stream()
+                .filter(entry -> entry != null && entry.isActive() && entry.getId() != null && !entry.getId().isBlank())
+                .max(Comparator.comparingLong(LongTermMemoryEntry::getCreatedAt))
+                .map(LongTermMemoryEntry::getId)
+                .orElse(null);
+    }
+
+    /**
+     * 将新增记忆写入图投影，并补充时序边和相似边。
+     */
+    private void indexNewMemoryInGraph(LongTermMemoryEntry newEntry, String previousMemoryId) {
+        if (!memoryGraphClient.isAvailable() || newEntry == null) {
+            return;
+        }
+
+        memoryGraphClient.upsertMemory(OWNER_ID, newEntry);
+        if (previousMemoryId != null) {
+            memoryGraphClient.addFollows(OWNER_ID, previousMemoryId, newEntry.getId());
+        }
+        linkSimilarGraphEdges(newEntry);
+    }
+
+    /**
+     * 扫描近期 active 记忆，为新记忆建立 SIMILAR_TO 边。
+     */
+    private void linkSimilarGraphEdges(LongTermMemoryEntry newEntry) {
+        List<Float> newEmbedding = newEntry.getEmbedding();
+        if (newEmbedding == null || newEmbedding.isEmpty()) {
+            return;
+        }
+
+        int limit = Math.max(0, memoryProperties.getLongTerm().getGraph().getSimilarScanLimit());
+        if (limit == 0) {
+            return;
+        }
+        double threshold = memoryProperties.getLongTerm().getGraph().getSimilarityEdgeThreshold();
+
+        memories.values().stream()
+                .filter(entry -> entry != null
+                        && entry.isActive()
+                        && entry.getId() != null
+                        && !entry.getId().equals(newEntry.getId())
+                        && entry.getEmbedding() != null
+                        && entry.getEmbedding().size() == newEmbedding.size())
+                .sorted(Comparator.comparingLong(LongTermMemoryEntry::getCreatedAt).reversed())
+                .limit(limit)
+                .forEach(entry -> {
+                    double similarity = cosine(entry.getEmbedding(), newEmbedding);
+                    if (similarity >= threshold) {
+                        memoryGraphClient.addSimilar(OWNER_ID, entry.getId(), newEntry.getId(), similarity);
+                    }
+                });
+    }
+
+    /**
+     * 询问 Neo4j 哪些淘汰候选属于高中心度保护节点。
+     */
+    private Set<String> graphProtectedMemoryIds(List<LongTermMemoryEntry> candidates) {
+        if (!memoryGraphClient.isAvailable() || candidates == null || candidates.isEmpty()) {
+            return Set.of();
+        }
+        int threshold = memoryProperties.getLongTerm().getGraph().getCentralityProtectInDegree();
+        if (threshold <= 0) {
+            return Set.of();
+        }
+        List<String> candidateIds = candidates.stream()
+                .map(LongTermMemoryEntry::getId)
+                .toList();
+        return memoryGraphClient.findHighCentralityMemoryIds(OWNER_ID, candidateIds, threshold);
     }
 
     private double memorySimilarity(LongTermMemoryEntry left, LongTermMemoryEntry right) {

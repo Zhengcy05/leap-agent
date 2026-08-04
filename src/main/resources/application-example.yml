@@ -94,6 +94,17 @@ memory:
       password: leap
       init-schema: true     # 自动初始化 检查数据表是否存在，无需手动建表 SQL
       table-name: long_term_memory
+    graph:
+      enabled: true
+      uri: bolt://localhost:7687
+      username: neo4j
+      password: leap
+      init-schema: true
+      similarity-edge-threshold: 0.80  # 新记忆和近期记忆超过该相似度时建立 SIMILAR_TO
+      similar-scan-limit: 50           # 新增记忆时向前扫描多少条 active 记忆
+      neighbor-hops: 1                 # 召回 seed 通过图扩展的跳数
+      centrality-protect-in-degree: 3  # 入度达到该值时，TTL 淘汰会保护该记忆
+      graph-expanded-score: 0.45       # 图扩展命中的兜底召回分数
     async-extraction-enabled: true
     async-llm-enabled: true
     prompt-top-k: 4

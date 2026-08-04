@@ -200,6 +200,11 @@ memory:
       username: leap
       password: leap
       init-schema: true
+    graph:
+      enabled: true
+      uri: bolt://localhost:7687
+      username: neo4j
+      password: leap
 
 prometheus:
   base-url: http://localhost:9090
@@ -217,7 +222,7 @@ export DASHSCOPE_API_KEY=your-api-key
 
 ## 本地启动
 
-启动 Milvus、PostgreSQL、Elasticsearch 和 Prometheus：
+启动 Milvus、PostgreSQL、Elasticsearch、Neo4j 和 Prometheus：
 
 ```bash
 docker compose -f vector-database.yml up -d

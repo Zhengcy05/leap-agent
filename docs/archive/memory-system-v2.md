@@ -65,6 +65,8 @@ TF 词表不单独持久化，启动恢复后可以从 `content` 重建；真正
 
 当前没有把长期记忆直接写入 Milvus。Milvus 更适合作为后续可选向量索引层，用 `memory_id` 回表 PostgreSQL 取完整事实；不建议让它承担合并、衰减、过期、审计等事务型治理。
 
+Neo4j 图增强启用后也只作为可重建投影层：PostgreSQL 保存权威记忆条目，Neo4j 保存 `Memory` 节点和 `FOLLOWS / SIMILAR_TO` 边。召回时先由长期记忆本体产生 seed，再用 Neo4j 扩展 1-hop 关联记忆，最后仍回内存快照/PG 加载结果做 active 过滤。
+
 ### 注入
 
 长期记忆以独立段落注入 system prompt，位置在：
@@ -103,7 +105,7 @@ TF 词表不单独持久化，启动恢复后可以从 `content` 重建；真正
 
 暂不做：
 
-1. Neo4j 图增强
+1. 更完整的 Neo4j 关系抽取，例如 `CAUSES / BELONGS_TO`
 2. 多用户隔离
 3. 工具参数自动补全
 4. Milvus 长期记忆向量索引与图中心度保护钩子

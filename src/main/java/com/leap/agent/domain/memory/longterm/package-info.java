@@ -1,8 +1,8 @@
 /**
  * 长期记忆域。
  *
- * <p>V2 先落地轻量闭环：对话后异步抽取稳定事实/偏好/约束，写入本地持久化仓储；
- * 下一轮请求前按当前问题召回相关条目，再注入 system prompt。图增强记忆暂不接入，
- * 避免在当前阶段引入 Neo4j/图一致性治理成本。</p>
+ * <p>V2 以 PostgreSQL 作为长期记忆事实源；Neo4j 仅保存可重建的 Memory 节点和
+ * FOLLOWS / SIMILAR_TO 图投影。召回先按 embedding/TF 产生 seed，再用图扩展关联记忆，
+ * 最后仍以已加载的 active 长期记忆条目为准注入 system prompt。</p>
  */
 package com.leap.agent.domain.memory.longterm;

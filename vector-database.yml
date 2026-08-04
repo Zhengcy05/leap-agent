@@ -121,6 +121,24 @@ services:
       interval: 20s
       timeout: 10s
       retries: 10
+
+  neo4j:
+    container_name: leap-neo4j
+    image: neo4j:5.23-community
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/leap
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/neo4j/data:/data
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/neo4j/logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p leap 'RETURN 1' >/dev/null 2>&1 || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
 networks:
   default:
     name: milvus

@@ -47,7 +47,7 @@ public class InternalDocsTools {
      * @return JSON 格式的搜索结果，包含相关文档内容、相似度分数和元数据
      */
     @Tool(description = "Use this tool to search internal documentation and knowledge base for relevant information. "
-            + "It performs RAG (Retrieval-Augmented Generation) to find similar documents and extract processing steps. "
+            + "It performs RAG with Milvus semantic recall, Elasticsearch BM25 recall, and Neo4j knowledge-graph recall. "
             + "This is useful when you need to understand internal procedures, best practices, or step-by-step guides "
             + "stored in the company's documentation.")
     public String queryInternalDocs(

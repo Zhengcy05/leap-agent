@@ -77,6 +77,17 @@ rag:
     base-url: http://localhost:9200
     index-name: leap_rag_chunks
     timeout-millis: 5000
+  knowledge-graph:
+    enabled: true
+    uri: bolt://localhost:7687
+    username: neo4j
+    password: leap
+    init-schema: true
+    max-hops: 2
+    weight: 1.0  # 权重系数
+    fetch-multiplier: 2   # 图谱预取放大系数：最终只取TopN结果，但先多拉 2*N 条候选，过滤降噪后再参与RRF排序，提升召回上限
+    rrf-k: 60   # RRF 倒数融合算法的平滑常量 k，用来避免排名靠前文档分数爆炸，业界常用取值 50~60
+    async-index-enabled: true
 
 # 记忆模块配置
 memory:

@@ -7,6 +7,7 @@ import io.milvus.param.dml.SearchParam;
 import io.milvus.response.SearchResultsWrapper;
 import lombok.Getter;
 import lombok.Setter;
+import com.leap.agent.common.config.RagProperties;
 import com.leap.agent.infra.milvus.MilvusConstants;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,15 +17,17 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * RAG 混合召回服务。
  *
  * <p>职责边界：
- * Milvus 负责语义向量召回，Elasticsearch 负责 BM25 关键词召回；
- * 两者都只提供候选 chunk id，最终内容必须回 PostgreSQL 事实源读取。</p>
+ * Milvus 负责语义向量召回，Elasticsearch 负责 BM25 关键词召回，Neo4j 负责 KG 图召回；
+ * 三者都只提供候选 chunk id，最终内容必须回 PostgreSQL 事实源读取。</p>
  */
 @Service
 public class VectorSearchService {
@@ -43,6 +46,12 @@ public class VectorSearchService {
     @Autowired
     private ElasticsearchRagIndexService elasticsearchRagIndexService;
 
+    @Autowired
+    private Neo4jRagKnowledgeGraphService knowledgeGraphService;
+
+    @Autowired
+    private RagProperties ragProperties;
+
     /**
      * 搜索相似文档
      * 
@@ -55,10 +64,11 @@ public class VectorSearchService {
 
         Map<String, CandidateScore> candidates = new LinkedHashMap<>();
 
-        // 先各取 topK*2 作为候选池，给两路召回留一点重叠和互补空间。
-        // todo: AGI-saber 在这里还有 query rewrite、RRF 和 rerank；当前先用轻量加权合并跑通三层架构。
-        collectVectorCandidates(query, topK * 2, candidates);
-        collectKeywordCandidates(query, topK * 2, candidates);
+        // 先各取放大的候选池，再用 RRF 合并，避免不同召回源的原始分数尺度不可比。
+        int fetchK = Math.max(topK, topK * Math.max(1, ragProperties.getKnowledgeGraph().getFetchMultiplier()));
+        collectVectorCandidates(query, fetchK, candidates);
+        collectKeywordCandidates(query, fetchK, candidates);
+        collectGraphCandidates(query, fetchK, candidates);
 
         if (candidates.isEmpty()) {
             return List.of();
@@ -70,7 +80,7 @@ public class VectorSearchService {
                 .toList();
 
         // 关键一致性点：索引命中不等于事实可用。这里回 PG 只取 ACTIVE chunk，
-        // 能挡住 Milvus/ES 中尚未删除的陈旧候选，避免旧内容进入 prompt。
+        // 能挡住 Milvus/ES/Neo4j 中尚未删除的陈旧候选，避免旧内容进入 prompt。
         List<RagDocumentChunk> chunks = chunkRepository.findActiveByIds(orderedIds);
         List<SearchResult> results = new ArrayList<>();
         for (RagDocumentChunk chunk : chunks) {
@@ -87,6 +97,8 @@ public class VectorSearchService {
             result.setTitle(chunk.getTitle());
             result.setVectorScore(score.vectorScore());
             result.setKeywordScore(score.keywordScore());
+            result.setGraphScore(score.graphScore());
+            result.setRetrievalSources(new ArrayList<>(score.retrievalSources()));
             results.add(result);
             if (results.size() >= topK) {
                 break;
@@ -122,34 +134,48 @@ public class VectorSearchService {
             SearchResultsWrapper wrapper = new SearchResultsWrapper(searchResponse.getData().getResults());
             for (int i = 0; i < wrapper.getRowRecords(0).size(); i++) {
                 String id = (String) wrapper.getIDScore(0).get(i).get("id");
-                float distance = wrapper.getIDScore(0).get(i).getScore();
                 if (id != null && !id.isBlank()) {
                     CandidateScore current = candidates.getOrDefault(id, CandidateScore.empty());
-                    // L2 距离越小越相似，这里压到 (0,1]，方便和 ES 的 keyword score 做轻量融合。
-                    candidates.put(id, current.withVectorScore(1D / (1D + Math.max(0D, distance))));
+                    candidates.put(id, current.withVectorScore(rrfContribution(i, 1.0D)));
                 }
             }
         } catch (Exception e) {
-            logger.warn("Milvus 向量召回失败，尝试仅使用 ES 关键词召回: {}", e.getMessage());
+            logger.warn("Milvus 向量召回失败，尝试使用 ES/KG 召回: {}", e.getMessage());
         }
     }
 
     private void collectKeywordCandidates(String query, int topK, Map<String, CandidateScore> candidates) {
         List<ElasticsearchRagIndexService.KeywordHit> hits = elasticsearchRagIndexService.searchKeyword(query, Math.max(1, topK));
-        // ES 返回的是 BM25 _score，绝对值会随 query 和语料分布变化；先按本次最大分归一化。
-        // todo: 更完整的 AGI-saber 路线是 RRF(rank based) + reranker，避免不同召回器分数尺度不可比。
-        double maxScore = hits.stream()
-                .mapToDouble(ElasticsearchRagIndexService.KeywordHit::score)
-                .max()
-                .orElse(0D);
-        for (ElasticsearchRagIndexService.KeywordHit hit : hits) {
+        for (int i = 0; i < hits.size(); i++) {
+            ElasticsearchRagIndexService.KeywordHit hit = hits.get(i);
             if (hit.id() == null || hit.id().isBlank()) {
                 continue;
             }
-            double normalizedScore = maxScore > 0D ? hit.score() / maxScore : hit.score();
             CandidateScore current = candidates.getOrDefault(hit.id(), CandidateScore.empty());
-            candidates.put(hit.id(), current.withKeywordScore(normalizedScore));
+            candidates.put(hit.id(), current.withKeywordScore(rrfContribution(i, 1.0D)));
         }
+    }
+
+    private void collectGraphCandidates(String query, int topK, Map<String, CandidateScore> candidates) {
+        List<Neo4jRagKnowledgeGraphService.GraphHit> hits = knowledgeGraphService.searchGraph(query, Math.max(1, topK));
+        double weight = ragProperties.getKnowledgeGraph().getWeight() > 0D
+                ? ragProperties.getKnowledgeGraph().getWeight()
+                : 1.0D;
+        for (int i = 0; i < hits.size(); i++) {
+            Neo4jRagKnowledgeGraphService.GraphHit hit = hits.get(i);
+            if (hit.chunkId() == null || hit.chunkId().isBlank()) {
+                continue;
+            }
+            CandidateScore current = candidates.getOrDefault(hit.chunkId(), CandidateScore.empty());
+            candidates.put(hit.chunkId(), current.withGraphScore(rrfContribution(i, weight)));
+        }
+    }
+
+    private double rrfContribution(int rank, double weight) {
+        int rrfK = ragProperties.getKnowledgeGraph().getRrfK() > 0
+                ? ragProperties.getKnowledgeGraph().getRrfK()
+                : 60;
+        return weight / (rrfK + rank + 1D);
     }
 
     /**
@@ -163,29 +189,42 @@ public class VectorSearchService {
         private float score;
         private double vectorScore;
         private double keywordScore;
+        private double graphScore;
+        private List<String> retrievalSources = new ArrayList<>();
         private String metadata;
         private String source;
         private String title;
 
     }
 
-    private record CandidateScore(double vectorScore, double keywordScore) {
+    private record CandidateScore(double vectorScore,
+                                  double keywordScore,
+                                  double graphScore,
+                                  Set<String> retrievalSources) {
         static CandidateScore empty() {
-            return new CandidateScore(0D, 0D);
+            return new CandidateScore(0D, 0D, 0D, new LinkedHashSet<>());
         }
 
         CandidateScore withVectorScore(double score) {
-            return new CandidateScore(Math.max(vectorScore, score), keywordScore);
+            Set<String> sources = new LinkedHashSet<>(retrievalSources);
+            sources.add("semantic");
+            return new CandidateScore(vectorScore + score, keywordScore, graphScore, sources);
         }
 
         CandidateScore withKeywordScore(double score) {
-            return new CandidateScore(vectorScore, Math.max(keywordScore, score));
+            Set<String> sources = new LinkedHashSet<>(retrievalSources);
+            sources.add("keyword");
+            return new CandidateScore(vectorScore, keywordScore + score, graphScore, sources);
+        }
+
+        CandidateScore withGraphScore(double score) {
+            Set<String> sources = new LinkedHashSet<>(retrievalSources);
+            sources.add("graph");
+            return new CandidateScore(vectorScore, keywordScore, graphScore + score, sources);
         }
 
         double combinedScore() {
-            // 当前是能用的简化融合：语义召回更重，关键词召回补精确术语、服务名、错误码。
-            // 后续接 RRF/rerank 时可以只替换这里和候选排序，不影响 PG hydrate 事实源边界。
-            return vectorScore * 0.70D + keywordScore * 0.30D;
+            return vectorScore + keywordScore + graphScore;
         }
     }
 }

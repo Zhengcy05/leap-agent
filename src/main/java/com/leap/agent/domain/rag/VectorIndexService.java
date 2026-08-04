@@ -50,6 +50,9 @@ public class VectorIndexService {
     @Autowired
     private ElasticsearchRagIndexService elasticsearchRagIndexService;
 
+    @Autowired
+    private Neo4jRagKnowledgeGraphService knowledgeGraphService;
+
     @Value("${file.upload.path}")
     private String uploadPath;
 
@@ -161,7 +164,7 @@ public class VectorIndexService {
                 // 构建元数据（包含文件信息）
                 Map<String, Object> metadata = buildMetadata(path.toString(), chunk, chunks.size());
 
-                // PG 是事实源：先保存完整 chunk，再写 Milvus/ES 这两个可重建索引。
+                // PG 是事实源：先保存完整 chunk，再写 Milvus/ES/Neo4j 这些可重建投影。
                 // 如果索引写入失败，PG 中仍保留事实；后续可以通过 reconcile/outbox 重新投影。
                 RagDocumentChunk storedChunk = chunkRepository.save(buildRagChunk(metadata, chunk, chunks.size()));
                 metadata.put("_chunk_id", storedChunk.getId());
@@ -170,6 +173,7 @@ public class VectorIndexService {
 
                 insertToMilvus(storedChunk.getId(), vector, metadata);
                 elasticsearchRagIndexService.indexChunk(storedChunk);
+                knowledgeGraphService.indexChunkAsync(storedChunk);
                 
                 logger.info("✓ 分片 {}/{} 索引成功", i + 1, chunks.size());
 
@@ -192,9 +196,10 @@ public class VectorIndexService {
             Path path = Paths.get(filePath).normalize();
             String normalizedPath = path.toString().replace(File.separator, "/");
             // 删除采用“PG 先 tombstone，索引后清理”的顺序。查询回 PG hydrate 时会过滤 DELETED，
-            // 所以即使 Milvus/ES 删除延迟，也不会把旧分片注入 prompt。
+            // 所以即使 Milvus/ES/Neo4j 删除延迟，也不会把旧分片注入 prompt。
             chunkRepository.markSourceDeleted(normalizedPath);
             elasticsearchRagIndexService.deleteBySource(normalizedPath);
+            knowledgeGraphService.deleteBySource(normalizedPath);
             
             // 构建删除表达式：metadata["_source"] == "xxx"
             String expr = String.format("metadata[\"_source\"] == \"%s\"", normalizedPath);

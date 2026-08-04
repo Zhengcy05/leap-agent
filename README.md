@@ -1,6 +1,6 @@
 # Leap Agent
 
-Leap Agent 是一个基于 Spring Boot 的 AI 助手后端服务，面向知识库问答和 AIOps 排障分析场景。项目集成 DashScope 对话与向量模型、Milvus 向量检索、本地 Agent 工具，以及可选的 MCP 动态工具，通过 REST 和 SSE 接口对外提供能力。
+Leap Agent 是一个基于 Spring Boot 的 AI 助手后端服务，面向知识库问答和 AIOps 排障分析场景。项目集成 DashScope 对话与向量模型、Milvus 向量检索、Elasticsearch BM25、Neo4j Knowledge Graph、本地 Agent 工具，以及可选的 MCP 动态工具，通过 REST 和 SSE 接口对外提供能力。
 
 项目当前包含一个轻量级静态测试页面，位于 `src/main/resources/static`。真正的核心能力在后端：文档上传、文档分片、向量化、向量检索、工具增强对话、会话历史管理，以及自动化告警分析报告生成。
 当前主 README 为中文版本；英文说明见 `README.en.md`。
@@ -38,7 +38,7 @@ domain
 runtime.tool
   AgentToolRegistry       本地方法工具 + MCP 工具回调
   DateTimeTools           当前时间工具
-  InternalDocsTools       基于 Milvus 的内部文档检索
+  InternalDocsTools       基于 Milvus/ES/Neo4j 的内部文档检索
   QueryMetricsTools       Prometheus 告警和指标查询
   QueryLogsTools          CLS 风格日志主题和 Mock 日志查询
        |
@@ -85,7 +85,7 @@ Leap Agent/
 │   ├── archive/                       # 阶段性设计与实现归档
 │   └── generated/                     # 生成的分析和参考文档
 ├── prometheus/                        # Prometheus 配置和告警规则
-└── vector-database.yml                # Milvus + PostgreSQL + Elasticsearch 本地 compose 文件
+└── vector-database.yml                # Milvus + PostgreSQL + Elasticsearch + Neo4j 本地 compose 文件
 ```
 
 ## 主要请求链路
@@ -102,8 +102,8 @@ Leap Agent/
 ### 文档上传与检索
 
 1. `FileUploadController` 保存上传的 `txt` 或 `md` 文件。
-2. `VectorIndexService` 读取文件，删除同源旧分片，执行文档分片、向量化，并写入 Milvus。
-3. 当 Agent 需要内部知识时，`InternalDocsTools` 通过 `VectorSearchService` 检索相关分片。
+2. `VectorIndexService` 读取文件，删除同源旧分片，执行文档分片、向量化，写入 PostgreSQL 事实源，并投影到 Milvus、Elasticsearch 和 Neo4j。
+3. 当 Agent 需要内部知识时，`InternalDocsTools` 通过 `VectorSearchService` 执行 Milvus/ES/Neo4j 三路 RRF 召回，再回 PostgreSQL 读取 active 分片。
 
 ### AIOps
 
@@ -186,6 +186,13 @@ rag:
     enabled: true
     base-url: http://localhost:9200
     index-name: leap_rag_chunks
+  knowledge-graph:
+    enabled: true
+    uri: bolt://localhost:7687
+    username: neo4j
+    password: leap
+    max-hops: 2
+    rrf-k: 60
 
 memory:
   short-term:
@@ -337,7 +344,7 @@ curl -N -X POST http://localhost:9900/api/ai_ops
 | 工具类 | 用途 |
 | --- | --- |
 | `DateTimeTools` | 返回当前日期时间。 |
-| `InternalDocsTools` | 通过 Milvus 语义召回、Elasticsearch 关键词召回和 PostgreSQL 回表检索内部知识库。 |
+| `InternalDocsTools` | 通过 Milvus 语义召回、Elasticsearch 关键词召回、Neo4j KG 图召回和 PostgreSQL 回表检索内部知识库。 |
 | `QueryMetricsTools` | 查询 Prometheus 告警和指标，支持 Mock。 |
 | `QueryLogsTools` | 提供日志主题发现和 CLS 风格 Mock 日志查询。 |
 | `AgentToolRegistry` | 统一组装本地工具和 MCP 动态工具回调。 |

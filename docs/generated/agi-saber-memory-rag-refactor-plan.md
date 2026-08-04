@@ -35,17 +35,18 @@ Implemented in this pass:
 2. Local schema initialization for RAG chunk table.
 3. RAG indexing flow changed to `PG upsert -> Milvus vector index`.
 4. Elasticsearch keyword projection index.
-5. RAG search changed to `Milvus + ES candidate ids -> PG hydrate`.
+5. RAG search changed to `Milvus + ES + Neo4j KG candidate ids -> PG hydrate`.
 6. Compose/config/docs updated for local PostgreSQL and Elasticsearch.
 7. Long-term memory extraction is LLM-only and narrowed away from preference slots, user profile rules, and toward facts, troubleshooting cases, and tool lessons.
 8. Neo4j memory graph projection for long-term memories: Memory nodes, FOLLOWS/SIMILAR_TO edges, graph-expanded recall, and centrality-aware TTL protection.
+9. Neo4j RAG knowledge graph projection: entity/relation extraction for chunks, KG graph recall, and Milvus/ES/KG RRF fusion.
 
 Deferred:
 
 1. Durable outbox table and background index worker.
 2. pgvector replacement for Milvus.
 3. Cross-service distributed transaction guarantees.
-4. LLM extraction for CAUSES/BELONGS_TO graph edges.
+4. LLM extraction for CAUSES/BELONGS_TO memory graph edges.
 
 ## Consistency Model
 
@@ -57,3 +58,4 @@ The intended consistency model is PG-strong and index-eventual:
 4. Stale index hits are filtered out by PostgreSQL status/version.
 5. Index rebuild can be done by scanning PostgreSQL.
 6. Neo4j is also a projection and can be rebuilt by scanning PostgreSQL long-term memories.
+7. RAG KG is a projection too: chunk content stays authoritative in PostgreSQL, while Neo4j only contributes candidate chunk ids.

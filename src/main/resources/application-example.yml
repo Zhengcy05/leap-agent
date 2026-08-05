@@ -77,6 +77,18 @@ rag:
     base-url: http://localhost:9200
     index-name: leap_rag_chunks
     timeout-millis: 5000
+  retrieval:
+    rrf-k: 60                # RRF 倒数融合算法的平滑常量 k，业界常用 50~60
+    fetch-multiplier: 2      # rerank 关闭时，每路召回候选池相对 topK 的放大倍数
+    rerank-enabled: true     # 是否启用 RRF 后的精排
+    rerank-provider: dashscope-rerank # dashscope-rerank 专用模型优先；也可设为 llm 或 none
+    rerank-pool-multiplier: 4 # rerank 开启时，每路召回候选池扩大到 topK 的 4 倍
+    min-rerank-candidates: 20 # PG hydrate 后候选数至少达到 20 条才触发精排
+    rerank-preview-len: 200  # 给 reranker 看的每条候选最大字符数
+    rerank-model: qwen3-vl-rerank # dashscope-rerank 默认专用模型；provider=llm 时可改为普通对话模型
+    rerank-base-url: https://dashscope.aliyuncs.com/api/v1
+    rerank-timeout-millis: 8000
+    rerank-llm-fallback-enabled: true # 专用 rerank 失败时是否退到普通 LLM listwise
   knowledge-graph:
     enabled: true
     uri: bolt://localhost:7687
@@ -85,8 +97,6 @@ rag:
     init-schema: true
     max-hops: 2
     weight: 1.0  # 权重系数
-    fetch-multiplier: 2   # 图谱预取放大系数：最终只取TopN结果，但先多拉 2*N 条候选，过滤降噪后再参与RRF排序，提升召回上限
-    rrf-k: 60   # RRF 倒数融合算法的平滑常量 k，用来避免排名靠前文档分数爆炸，业界常用取值 50~60
     async-index-enabled: true
 
 # 记忆模块配置

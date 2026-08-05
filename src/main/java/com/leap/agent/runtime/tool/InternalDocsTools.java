@@ -48,6 +48,7 @@ public class InternalDocsTools {
      */
     @Tool(description = "Use this tool to search internal documentation and knowledge base for relevant information. "
             + "It performs RAG with Milvus semantic recall, Elasticsearch BM25 recall, and Neo4j knowledge-graph recall. "
+            + "Results are fused by RRF, hydrated from PostgreSQL, and refined by DashScope rerank when enabled. "
             + "This is useful when you need to understand internal procedures, best practices, or step-by-step guides "
             + "stored in the company's documentation.")
     public String queryInternalDocs(

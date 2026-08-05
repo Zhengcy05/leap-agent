@@ -52,6 +52,9 @@ public class VectorSearchService {
     @Autowired
     private RagProperties ragProperties;
 
+    @Autowired
+    private RagRerankerService ragRerankerService;
+
     /**
      * 搜索相似文档
      * 
@@ -65,7 +68,7 @@ public class VectorSearchService {
         Map<String, CandidateScore> candidates = new LinkedHashMap<>();
 
         // 先各取放大的候选池，再用 RRF 合并，避免不同召回源的原始分数尺度不可比。
-        int fetchK = Math.max(topK, topK * Math.max(1, ragProperties.getKnowledgeGraph().getFetchMultiplier()));
+        int fetchK = resolveFetchK(topK);
         collectVectorCandidates(query, fetchK, candidates);
         collectKeywordCandidates(query, fetchK, candidates);
         collectGraphCandidates(query, fetchK, candidates);
@@ -77,6 +80,7 @@ public class VectorSearchService {
         List<String> orderedIds = candidates.entrySet().stream()
                 .sorted((left, right) -> Double.compare(right.getValue().combinedScore(), left.getValue().combinedScore()))
                 .map(Map.Entry::getKey)
+                .limit(fetchK)
                 .toList();
 
         // 关键一致性点：索引命中不等于事实可用。这里回 PG 只取 ACTIVE chunk，
@@ -92,6 +96,7 @@ public class VectorSearchService {
             result.setId(chunk.getId());
             result.setContent(chunk.getContent());
             result.setScore((float) score.combinedScore());
+            result.setRrfScore(score.combinedScore());
             result.setMetadata(String.valueOf(chunk.getMetadata()));
             result.setSource(chunk.getSource());
             result.setTitle(chunk.getTitle());
@@ -100,15 +105,16 @@ public class VectorSearchService {
             result.setGraphScore(score.graphScore());
             result.setRetrievalSources(new ArrayList<>(score.retrievalSources()));
             results.add(result);
-            if (results.size() >= topK) {
-                break;
-            }
         }
 
-        logger.info("搜索完成, 找到 {} 个相似文档", results.size());
-        return results;
+        List<SearchResult> finalResults = ragRerankerService.rerank(query, results, topK).results();
+        logger.info("搜索完成, 找到 {} 个相似文档", finalResults.size());
+        return finalResults;
     }
 
+    /**
+     * 收集 Milvus 语义候选并写入 RRF 分数。
+     */
     private void collectVectorCandidates(String query, int topK, Map<String, CandidateScore> candidates) {
         try {
             List<Float> queryVector = embeddingService.generateQueryVector(query);
@@ -144,6 +150,9 @@ public class VectorSearchService {
         }
     }
 
+    /**
+     * 收集 Elasticsearch BM25 候选并写入 RRF 分数。
+     */
     private void collectKeywordCandidates(String query, int topK, Map<String, CandidateScore> candidates) {
         List<ElasticsearchRagIndexService.KeywordHit> hits = elasticsearchRagIndexService.searchKeyword(query, Math.max(1, topK));
         for (int i = 0; i < hits.size(); i++) {
@@ -156,6 +165,9 @@ public class VectorSearchService {
         }
     }
 
+    /**
+     * 收集 Neo4j KG 图候选并写入 RRF 分数。
+     */
     private void collectGraphCandidates(String query, int topK, Map<String, CandidateScore> candidates) {
         List<Neo4jRagKnowledgeGraphService.GraphHit> hits = knowledgeGraphService.searchGraph(query, Math.max(1, topK));
         double weight = ragProperties.getKnowledgeGraph().getWeight() > 0D
@@ -171,11 +183,45 @@ public class VectorSearchService {
         }
     }
 
+    /**
+     * 计算单路候选在 RRF 中贡献的分数。
+     */
     private double rrfContribution(int rank, double weight) {
-        int rrfK = ragProperties.getKnowledgeGraph().getRrfK() > 0
-                ? ragProperties.getKnowledgeGraph().getRrfK()
-                : 60;
-        return weight / (rrfK + rank + 1D);
+        return weight / (resolveRrfK() + rank + 1D);
+    }
+
+    /**
+     * 计算召回阶段每路需要拉取的候选数量。
+     */
+    private int resolveFetchK(int topK) {
+        int safeTopK = Math.max(1, topK);
+        int multiplier = ragProperties.getRetrieval().getFetchMultiplier() > 0
+                ? ragProperties.getRetrieval().getFetchMultiplier()
+                : ragProperties.getKnowledgeGraph().getFetchMultiplier();
+        if (multiplier <= 0) {
+            multiplier = 2;
+        }
+        int fetchK = safeTopK * multiplier;
+        if (ragProperties.getRetrieval().isRerankEnabled()) {
+            int rerankMultiplier = ragProperties.getRetrieval().getRerankPoolMultiplier() > 0
+                    ? ragProperties.getRetrieval().getRerankPoolMultiplier()
+                    : 4;
+            fetchK = Math.max(fetchK, safeTopK * rerankMultiplier);
+        }
+        return Math.max(safeTopK, fetchK);
+    }
+
+    /**
+     * 读取 RRF 平滑常量，兼容旧 KG 配置。
+     */
+    private int resolveRrfK() {
+        if (ragProperties.getRetrieval().getRrfK() > 0) {
+            return ragProperties.getRetrieval().getRrfK();
+        }
+        if (ragProperties.getKnowledgeGraph().getRrfK() > 0) {
+            return ragProperties.getKnowledgeGraph().getRrfK();
+        }
+        return 60;
     }
 
     /**
@@ -187,6 +233,10 @@ public class VectorSearchService {
         private String id;
         private String content;
         private float score;
+        private double rrfScore;
+        private double rerankScore;
+        private boolean reranked;
+        private String rerankProvider;
         private double vectorScore;
         private double keywordScore;
         private double graphScore;

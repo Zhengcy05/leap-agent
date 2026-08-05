@@ -103,7 +103,7 @@ Leap Agent/
 
 1. `FileUploadController` 保存上传的 `txt` 或 `md` 文件。
 2. `VectorIndexService` 读取文件，删除同源旧分片，执行文档分片、向量化，写入 PostgreSQL 事实源，并投影到 Milvus、Elasticsearch 和 Neo4j。
-3. 当 Agent 需要内部知识时，`InternalDocsTools` 通过 `VectorSearchService` 执行 Milvus/ES/Neo4j 三路 RRF 召回，再回 PostgreSQL 读取 active 分片。
+3. 当 Agent 需要内部知识时，`InternalDocsTools` 通过 `VectorSearchService` 执行 Milvus/ES/Neo4j 三路 RRF 召回，回 PostgreSQL 读取 active 分片，再用 DashScope 专用 rerank 精排。
 
 ### AIOps
 
@@ -186,13 +186,24 @@ rag:
     enabled: true
     base-url: http://localhost:9200
     index-name: leap_rag_chunks
+  retrieval:
+    rrf-k: 60
+    fetch-multiplier: 2
+    rerank-enabled: true
+    rerank-provider: dashscope-rerank
+    rerank-pool-multiplier: 4
+    min-rerank-candidates: 20
+    rerank-preview-len: 200
+    rerank-model: qwen3-vl-rerank
+    rerank-base-url: https://dashscope.aliyuncs.com/api/v1
+    rerank-timeout-millis: 8000
+    rerank-llm-fallback-enabled: true
   knowledge-graph:
     enabled: true
     uri: bolt://localhost:7687
     username: neo4j
     password: leap
     max-hops: 2
-    rrf-k: 60
 
 memory:
   short-term:
@@ -344,7 +355,7 @@ curl -N -X POST http://localhost:9900/api/ai_ops
 | 工具类 | 用途 |
 | --- | --- |
 | `DateTimeTools` | 返回当前日期时间。 |
-| `InternalDocsTools` | 通过 Milvus 语义召回、Elasticsearch 关键词召回、Neo4j KG 图召回和 PostgreSQL 回表检索内部知识库。 |
+| `InternalDocsTools` | 通过 Milvus 语义召回、Elasticsearch 关键词召回、Neo4j KG 图召回、RRF 融合、PostgreSQL 回表和 DashScope 专用 rerank 检索内部知识库。 |
 | `QueryMetricsTools` | 查询 Prometheus 告警和指标，支持 Mock。 |
 | `QueryLogsTools` | 提供日志主题发现和 CLS 风格 Mock 日志查询。 |
 | `AgentToolRegistry` | 统一组装本地工具和 MCP 动态工具回调。 |
@@ -353,7 +364,7 @@ curl -N -X POST http://localhost:9900/api/ai_ops
 
 - `ChatSessionService` 使用内存保存每个 session 的短期记忆，服务重启后 session 历史会丢失。
 - `PreferenceMemoryService` 会把全局偏好持久化到本地 JSON 文件，服务重启后会自动回放到进程内缓存。
-- RAG 文档分片以 PostgreSQL 为事实源，Milvus/Elasticsearch 分别作为语义与关键词投影索引。
+- RAG 文档分片以 PostgreSQL 为事实源，Milvus/Elasticsearch/Neo4j 分别作为语义、关键词和图谱投影索引，查询链路为 RRF 融合后回表；候选数达到 `min-rerank-candidates` 才走 DashScope 专用 rerank，专用 rerank 失败时可退到 LLM listwise 或 RRF。
 - `LongTermMemoryService` 推荐使用 PostgreSQL 作为长期记忆事实源，Milvus 后续只作为可选向量索引层。
 - `SseEventSender` 是 SSE 事件格式化和发送的唯一入口。
 - `AgentToolRegistry` 是增删 Agent 工具的统一入口。

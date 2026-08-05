@@ -446,7 +446,7 @@ public class LongTermMemoryService {
                 && entry.getEmbedding().size() == queryEmbedding.size()) {
             return cosine(queryEmbedding, entry.getEmbedding());
         }
-        // 与 AGI-saber 一样，embedding 不可用或维度不匹配时降级到 TF cosine；TF 词表由内容临时重建，无需单独持久化。
+        // 与 成品项目 一样，embedding 不可用或维度不匹配时降级到 TF cosine；TF 词表由内容临时重建，无需单独持久化。
         return tfSimilarity(query, entry.getContent());
     }
 

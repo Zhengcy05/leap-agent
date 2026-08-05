@@ -25,7 +25,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -52,6 +51,7 @@ public class LongTermMemoryService {
     private final VectorEmbeddingService vectorEmbeddingService;
     private final ObjectMapper objectMapper;
     private final Neo4jMemoryGraphClient memoryGraphClient;
+    private final LongTermMemoryConsolidationService consolidationService;
     private final Map<String, LongTermMemoryEntry> memories = new ConcurrentHashMap<>();
     private int newMemoryCountSinceConsolidation;
     private final ExecutorService extractionExecutor = Executors.newSingleThreadExecutor(runnable -> {
@@ -67,12 +67,14 @@ public class LongTermMemoryService {
                                  MemoryProperties memoryProperties,
                                  VectorEmbeddingService vectorEmbeddingService,
                                  ObjectMapper objectMapper,
-                                 Neo4jMemoryGraphClient memoryGraphClient) {
+                                 Neo4jMemoryGraphClient memoryGraphClient,
+                                 LongTermMemoryConsolidationService consolidationService) {
         this.repository = repository;
         this.memoryProperties = memoryProperties;
         this.vectorEmbeddingService = vectorEmbeddingService;
         this.objectMapper = objectMapper;
         this.memoryGraphClient = memoryGraphClient;
+        this.consolidationService = consolidationService;
     }
 
     @PostConstruct
@@ -206,7 +208,7 @@ public class LongTermMemoryService {
         return !joined.isBlank();
     }
 
-    private List<MemoryCandidate> extractLlmCandidates(String sessionId, String userQuestion, String assistantAnswer) {
+    private List<LongTermMemoryCandidate> extractLlmCandidates(String sessionId, String userQuestion, String assistantAnswer) {
         DashScopeApi dashScopeApi = DashScopeApi.builder()
                 .apiKey(dashScopeApiKey)
                 .build();
@@ -272,9 +274,9 @@ public class LongTermMemoryService {
         }
     }
 
-    private List<MemoryCandidate> parseLlmCandidates(String sessionId, String raw) {
+    private List<LongTermMemoryCandidate> parseLlmCandidates(String sessionId, String raw) {
         String cleaned = raw.trim().replace("```json", "").replace("```", "").trim();
-        List<MemoryCandidate> candidates = new ArrayList<>();
+        List<LongTermMemoryCandidate> candidates = new ArrayList<>();
         try {
             JsonNode root = objectMapper.readTree(cleaned);
             JsonNode itemsNode = root.path("items");
@@ -288,7 +290,7 @@ public class LongTermMemoryService {
                 if (content.isBlank() || confidence < memoryProperties.getLongTerm().getMinConfidence()) {
                     continue;
                 }
-                candidates.add(new MemoryCandidate(
+                candidates.add(new LongTermMemoryCandidate(
                         sessionId,
                         category,
                         content,
@@ -303,13 +305,13 @@ public class LongTermMemoryService {
         return candidates;
     }
 
-    private synchronized void persistCandidates(List<MemoryCandidate> candidates) {
+    private synchronized void persistCandidates(List<LongTermMemoryCandidate> candidates) {
         if (candidates == null || candidates.isEmpty()) {
             return;
         }
 
-        Map<String, MemoryCandidate> uniqueCandidates = new LinkedHashMap<>();
-        for (MemoryCandidate candidate : candidates) {
+        Map<String, LongTermMemoryCandidate> uniqueCandidates = new LinkedHashMap<>();
+        for (LongTermMemoryCandidate candidate : candidates) {
             if (candidate.content().isBlank()
                     || candidate.confidence() < memoryProperties.getLongTerm().getMinConfidence()) {
                 continue;
@@ -319,96 +321,27 @@ public class LongTermMemoryService {
         }
 
         boolean changed = false;
-        for (MemoryCandidate candidate : uniqueCandidates.values()) {
-            changed |= upsertCandidate(candidate);
+        for (LongTermMemoryCandidate candidate : uniqueCandidates.values()) {
+            String previousMemoryId = findLatestActiveMemoryId();
+            List<Float> embedding = buildEmbedding(candidate.content());
+            LongTermMemoryConsolidationService.UpsertResult result = consolidationService.upsertCandidate(
+                    OWNER_ID,
+                    memories,
+                    candidate,
+                    embedding,
+                    previousMemoryId);
+            changed |= result.changed();
+            if (result.addedNewMemory()) {
+                newMemoryCountSinceConsolidation++;
+            }
         }
-        changed |= consolidateIfNeeded();
+        LongTermMemoryConsolidationService.ConsolidationResult consolidationResult =
+                consolidationService.consolidateIfNeeded(OWNER_ID, memories, newMemoryCountSinceConsolidation);
+        newMemoryCountSinceConsolidation = consolidationResult.newMemoryCountSinceConsolidation();
+        changed |= consolidationResult.changed();
         if (changed) {
             repository.saveAll(OWNER_ID, snapshotForPersistence());
         }
-    }
-
-    /**
-     * 新增或合并一条长期记忆，并同步图投影。
-     */
-    private boolean upsertCandidate(MemoryCandidate candidate) {
-        List<Float> embedding = buildEmbedding(candidate.content());
-        LongTermMemoryEntry duplicate = findDuplicate(candidate, embedding);
-        long now = System.currentTimeMillis();
-        if (duplicate != null) {
-            mergeIntoExisting(duplicate, candidate, embedding, now);
-            memoryGraphClient.upsertMemory(OWNER_ID, duplicate);
-            return true;
-        }
-
-        String previousMemoryId = findLatestActiveMemoryId();
-        LongTermMemoryEntry entry = new LongTermMemoryEntry(
-                UUID.randomUUID().toString(),
-                candidate.sessionId(),
-                candidate.category(),
-                candidate.content(),
-                candidate.tags(),
-                candidate.importance(),
-                candidate.confidence(),
-                candidate.source(),
-                embedding,
-                now,
-                now,
-                1L
-        );
-        memories.put(entry.getId(), entry);
-        newMemoryCountSinceConsolidation++;
-        indexNewMemoryInGraph(entry, previousMemoryId);
-        logger.info("新增长期记忆: [{}] {}", entry.getCategory(), entry.getContent());
-        return true;
-    }
-
-    private LongTermMemoryEntry findDuplicate(MemoryCandidate candidate, List<Float> candidateEmbedding) {
-        String normalizedCandidate = normalizeForCompare(candidate.content());
-        for (LongTermMemoryEntry entry : memories.values()) {
-            if (!entry.isActive() || !candidate.category().equals(entry.getCategory())) {
-                continue;
-            }
-            // 当前阶段只做“同类近重复合并”，不处理同一槽位的冲突仲裁，例如用户改名或默认地域变更。
-            String normalizedEntry = normalizeForCompare(entry.getContent());
-            if (normalizedEntry.equals(normalizedCandidate)
-                    || normalizedEntry.contains(normalizedCandidate)
-                    || normalizedCandidate.contains(normalizedEntry)) {
-                return entry;
-            }
-            if (!candidateEmbedding.isEmpty()
-                    && entry.getEmbedding() != null
-                    && entry.getEmbedding().size() == candidateEmbedding.size()) {
-                double similarity = cosine(candidateEmbedding, entry.getEmbedding());
-                if (similarity >= memoryProperties.getLongTerm().getDedupThreshold()) {
-                    return entry;
-                }
-            }
-        }
-        return null;
-    }
-
-    private void mergeIntoExisting(LongTermMemoryEntry entry,
-                                   MemoryCandidate candidate,
-                                   List<Float> embedding,
-                                   long now) {
-        if (candidate.content().length() > safe(entry.getContent()).length()) {
-            entry.setContent(candidate.content());
-        }
-        entry.setImportance(Math.max(entry.getImportance(), candidate.importance()));
-        entry.setConfidence(Math.max(entry.getConfidence(), candidate.confidence()));
-        entry.setSource(mergeSource(entry.getSource(), candidate.source()));
-        entry.setTags(mergeTags(entry.getTags(), candidate.tags()));
-        if (entry.getEmbedding() == null || entry.getEmbedding().isEmpty()) {
-            entry.setEmbedding(embedding);
-        } else if (embedding != null && entry.getEmbedding().size() == embedding.size()) {
-            entry.setEmbedding(weightedAverage(entry.getEmbedding(), embedding, entry.getImportance(), candidate.importance()));
-        }
-        if ((entry.getSessionId() == null || entry.getSessionId().isBlank()) && candidate.sessionId() != null) {
-            entry.setSessionId(candidate.sessionId());
-        }
-        entry.setLastAccessed(now);
-        entry.setVersion(entry.getVersion() + 1L);
     }
 
     private void normalizeLoadedEntry(LongTermMemoryEntry entry) {
@@ -432,146 +365,6 @@ public class LongTermMemoryService {
         return memories.values().stream()
                 .sorted(Comparator.comparing(LongTermMemoryEntry::getCreatedAt))
                 .toList();
-    }
-
-    private boolean consolidateIfNeeded() {
-        int triggerInterval = memoryProperties.getLongTerm().getConsolidationTriggerInterval();
-        if (triggerInterval <= 0 || newMemoryCountSinceConsolidation < triggerInterval || memories.size() <= 1) {
-            return false;
-        }
-        newMemoryCountSinceConsolidation = 0;
-        return consolidateMemories();
-    }
-
-    private boolean consolidateMemories() {
-        boolean changed = false;
-        long now = System.currentTimeMillis();
-        changed |= decayImportance(now);
-        changed |= mergeSimilarMemories(now);
-        changed |= expireLowValueMemories(now);
-        if (changed) {
-            logger.info("长期记忆治理完成，剩余 {} 条", memories.size());
-        }
-        return changed;
-    }
-
-    private boolean decayImportance(long now) {
-        double decayRate = memoryProperties.getLongTerm().getDecayRate();
-        if (decayRate <= 0D || decayRate >= 1D) {
-            return false;
-        }
-
-        boolean changed = false;
-        for (LongTermMemoryEntry entry : memories.values()) {
-            if (!entry.isActive() || entry.getCreatedAt() <= 0) {
-                continue;
-            }
-            double ageDays = Math.max(0D, (now - entry.getCreatedAt()) / 86_400_000D);
-            double decayed = entry.getImportance() * Math.pow(decayRate, ageDays);
-            if (entry.getImportance() - decayed >= 0.01D) {
-                entry.setImportance(decayed);
-                entry.setVersion(entry.getVersion() + 1L);
-                changed = true;
-            }
-        }
-        return changed;
-    }
-
-    /**
-     * 合并同类别中高度相似的长期记忆。
-     */
-    private boolean mergeSimilarMemories(long now) {
-        double dedupThreshold = memoryProperties.getLongTerm().getDedupThreshold();
-        double similarityThreshold = memoryProperties.getLongTerm().getSimilarityThreshold();
-        List<LongTermMemoryEntry> entries = new ArrayList<>(memories.values());
-        Set<String> removedIds = new LinkedHashSet<>();
-        boolean changed = false;
-
-        for (int i = 0; i < entries.size(); i++) {
-            LongTermMemoryEntry left = entries.get(i);
-            if (removedIds.contains(left.getId()) || !left.isActive()) {
-                continue;
-            }
-            for (int j = i + 1; j < entries.size(); j++) {
-                LongTermMemoryEntry right = entries.get(j);
-                if (removedIds.contains(right.getId())
-                        || !right.isActive()
-                        || !safe(left.getCategory()).equals(safe(right.getCategory()))) {
-                    continue;
-                }
-
-                double similarity = memorySimilarity(left, right);
-                if (similarity >= dedupThreshold) {
-                    mergeDuplicateIntoLeft(left, right, now);
-                    memories.remove(right.getId());
-                    memoryGraphClient.upsertMemory(OWNER_ID, left);
-                    memoryGraphClient.deleteMemory(OWNER_ID, right.getId());
-                    removedIds.add(right.getId());
-                    changed = true;
-                } else if (similarity >= similarityThreshold) {
-                    LongTermMemoryEntry merged = mergeEntries(left, right, now);
-                    memories.put(merged.getId(), merged);
-                    memories.remove(right.getId());
-                    memoryGraphClient.upsertMemory(OWNER_ID, merged);
-                    memoryGraphClient.deleteMemory(OWNER_ID, right.getId());
-                    removedIds.add(right.getId());
-                    changed = true;
-                }
-            }
-        }
-        return changed;
-    }
-
-    private void mergeDuplicateIntoLeft(LongTermMemoryEntry left, LongTermMemoryEntry right, long now) {
-        if (safe(right.getContent()).length() > safe(left.getContent()).length()) {
-            left.setContent(right.getContent());
-        }
-        left.setImportance(Math.max(left.getImportance(), right.getImportance()));
-        left.setConfidence(Math.max(left.getConfidence(), right.getConfidence()));
-        left.setSource(mergeSource(left.getSource(), right.getSource()));
-        left.setTags(mergeTags(left.getTags(), right.getTags()));
-        if ((left.getSessionId() == null || left.getSessionId().isBlank()) && right.getSessionId() != null) {
-            left.setSessionId(right.getSessionId());
-        }
-        if (left.getEmbedding() == null || left.getEmbedding().isEmpty()) {
-            left.setEmbedding(right.getEmbedding());
-        }
-        left.setLastAccessed(now);
-        left.setVersion(left.getVersion() + 1L);
-    }
-
-    /**
-     * 淘汰超过 TTL 且重要性低的记忆，图中心节点会被保护。
-     */
-    private boolean expireLowValueMemories(long now) {
-        int ttlDays = memoryProperties.getLongTerm().getTtlDays();
-        if (ttlDays <= 0) {
-            return false;
-        }
-
-        boolean changed = false;
-        double minImportance = memoryProperties.getLongTerm().getMinImportance();
-        long ttlMillis = ttlDays * 86_400_000L;
-        List<LongTermMemoryEntry> expiryCandidates = new ArrayList<>();
-        for (LongTermMemoryEntry entry : new ArrayList<>(memories.values())) {
-            if (!entry.isActive()) {
-                continue;
-            }
-            if (now - entry.getCreatedAt() > ttlMillis && entry.getImportance() < minImportance) {
-                expiryCandidates.add(entry);
-            }
-        }
-        Set<String> protectedIds = graphProtectedMemoryIds(expiryCandidates);
-        for (LongTermMemoryEntry entry : expiryCandidates) {
-            if (protectedIds.contains(entry.getId())) {
-                continue;
-            }
-            if (memories.remove(entry.getId()) != null) {
-                memoryGraphClient.deleteMemory(OWNER_ID, entry.getId());
-                changed = true;
-            }
-        }
-        return changed;
     }
 
     /**
@@ -647,115 +440,6 @@ public class LongTermMemoryService {
                 .orElse(null);
     }
 
-    /**
-     * 将新增记忆写入图投影，并补充时序边和相似边。
-     */
-    private void indexNewMemoryInGraph(LongTermMemoryEntry newEntry, String previousMemoryId) {
-        if (!memoryGraphClient.isAvailable() || newEntry == null) {
-            return;
-        }
-
-        memoryGraphClient.upsertMemory(OWNER_ID, newEntry);
-        if (previousMemoryId != null) {
-            memoryGraphClient.addFollows(OWNER_ID, previousMemoryId, newEntry.getId());
-        }
-        linkSimilarGraphEdges(newEntry);
-    }
-
-    /**
-     * 扫描近期 active 记忆，为新记忆建立 SIMILAR_TO 边。
-     */
-    private void linkSimilarGraphEdges(LongTermMemoryEntry newEntry) {
-        List<Float> newEmbedding = newEntry.getEmbedding();
-        if (newEmbedding == null || newEmbedding.isEmpty()) {
-            return;
-        }
-
-        int limit = Math.max(0, memoryProperties.getLongTerm().getGraph().getSimilarScanLimit());
-        if (limit == 0) {
-            return;
-        }
-        double threshold = memoryProperties.getLongTerm().getGraph().getSimilarityEdgeThreshold();
-
-        memories.values().stream()
-                .filter(entry -> entry != null
-                        && entry.isActive()
-                        && entry.getId() != null
-                        && !entry.getId().equals(newEntry.getId())
-                        && entry.getEmbedding() != null
-                        && entry.getEmbedding().size() == newEmbedding.size())
-                .sorted(Comparator.comparingLong(LongTermMemoryEntry::getCreatedAt).reversed())
-                .limit(limit)
-                .forEach(entry -> {
-                    double similarity = cosine(entry.getEmbedding(), newEmbedding);
-                    if (similarity >= threshold) {
-                        memoryGraphClient.addSimilar(OWNER_ID, entry.getId(), newEntry.getId(), similarity);
-                    }
-                });
-    }
-
-    /**
-     * 询问 Neo4j 哪些淘汰候选属于高中心度保护节点。
-     */
-    private Set<String> graphProtectedMemoryIds(List<LongTermMemoryEntry> candidates) {
-        if (!memoryGraphClient.isAvailable() || candidates == null || candidates.isEmpty()) {
-            return Set.of();
-        }
-        int threshold = memoryProperties.getLongTerm().getGraph().getCentralityProtectInDegree();
-        if (threshold <= 0) {
-            return Set.of();
-        }
-        List<String> candidateIds = candidates.stream()
-                .map(LongTermMemoryEntry::getId)
-                .toList();
-        return memoryGraphClient.findHighCentralityMemoryIds(OWNER_ID, candidateIds, threshold);
-    }
-
-    private double memorySimilarity(LongTermMemoryEntry left, LongTermMemoryEntry right) {
-        if (left.getEmbedding() != null
-                && right.getEmbedding() != null
-                && !left.getEmbedding().isEmpty()
-                && left.getEmbedding().size() == right.getEmbedding().size()) {
-            return cosine(left.getEmbedding(), right.getEmbedding());
-        }
-        return tfSimilarity(left.getContent(), right.getContent());
-    }
-
-    private LongTermMemoryEntry mergeEntries(LongTermMemoryEntry left, LongTermMemoryEntry right, long now) {
-        double leftImportance = left.getImportance();
-        double rightImportance = right.getImportance();
-
-        left.setContent(mergeContent(left.getContent(), right.getContent()));
-        left.setImportance(Math.max(leftImportance, rightImportance));
-        left.setConfidence(Math.max(left.getConfidence(), right.getConfidence()));
-        left.setSource(mergeSource(left.getSource(), right.getSource()));
-        left.setTags(mergeTags(left.getTags(), right.getTags()));
-        if ((left.getSessionId() == null || left.getSessionId().isBlank()) && right.getSessionId() != null) {
-            left.setSessionId(right.getSessionId());
-        }
-        if (left.getEmbedding() != null
-                && right.getEmbedding() != null
-                && !left.getEmbedding().isEmpty()
-                && left.getEmbedding().size() == right.getEmbedding().size()) {
-            left.setEmbedding(weightedAverage(left.getEmbedding(), right.getEmbedding(), leftImportance, rightImportance));
-        }
-        left.setLastAccessed(now);
-        left.setVersion(left.getVersion() + 1L);
-        return left;
-    }
-
-    private String mergeContent(String base, String other) {
-        String normalizedBase = safe(base);
-        String normalizedOther = safe(other);
-        if (normalizeForCompare(normalizedBase).contains(normalizeForCompare(normalizedOther))) {
-            return normalizedBase.length() >= normalizedOther.length() ? normalizedBase : normalizedOther;
-        }
-        if (normalizeForCompare(normalizedOther).contains(normalizeForCompare(normalizedBase))) {
-            return normalizedOther.length() >= normalizedBase.length() ? normalizedOther : normalizedBase;
-        }
-        return normalizeContent(normalizedBase + "；" + normalizedOther);
-    }
-
     private double semanticSimilarity(String query, List<Float> queryEmbedding, LongTermMemoryEntry entry) {
         if (!queryEmbedding.isEmpty()
                 && entry.getEmbedding() != null
@@ -796,23 +480,6 @@ public class LongTermMemoryService {
             return 0D;
         }
         return dot / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm));
-    }
-
-    private List<Float> weightedAverage(List<Float> left, List<Float> right, double leftWeight, double rightWeight) {
-        if (left == null || right == null || left.size() != right.size() || left.isEmpty()) {
-            return left == null ? List.of() : new ArrayList<>(left);
-        }
-        double totalWeight = Math.max(0D, leftWeight) + Math.max(0D, rightWeight);
-        if (totalWeight <= 0D) {
-            return new ArrayList<>(left);
-        }
-
-        List<Float> averaged = new ArrayList<>(left.size());
-        for (int i = 0; i < left.size(); i++) {
-            double value = (left.get(i) * leftWeight + right.get(i) * rightWeight) / totalWeight;
-            averaged.add((float) value);
-        }
-        return averaged;
     }
 
     private double tfSimilarity(String query, String content) {
@@ -888,32 +555,6 @@ public class LongTermMemoryService {
         };
     }
 
-    private LongTermMemorySource mergeSource(LongTermMemorySource existing, LongTermMemorySource incoming) {
-        if (existing == LongTermMemorySource.LLM || incoming == null) {
-            return existing;
-        }
-        if (incoming == LongTermMemorySource.LLM) {
-            return incoming;
-        }
-        if (existing == null
-                || existing == LongTermMemorySource.LEGACY
-                || existing == LongTermMemorySource.BOOTSTRAP) {
-            return incoming;
-        }
-        return existing;
-    }
-
-    private List<String> mergeTags(List<String> existing, List<String> incoming) {
-        Set<String> merged = new LinkedHashSet<>();
-        if (existing != null) {
-            merged.addAll(existing);
-        }
-        if (incoming != null) {
-            merged.addAll(incoming);
-        }
-        return new ArrayList<>(merged);
-    }
-
     private List<String> parseTags(JsonNode tagsNode) {
         List<String> tags = new ArrayList<>();
         if (tagsNode != null && tagsNode.isArray()) {
@@ -961,17 +602,4 @@ public class LongTermMemoryService {
                 && !dashScopeApiKey.contains("your-api-key");
     }
 
-    private record MemoryCandidate(
-            String sessionId,
-            String category,
-            String content,
-            List<String> tags,
-            double importance,
-            double confidence,
-            LongTermMemorySource source
-    ) {
-        private MemoryCandidate {
-            tags = tags == null ? List.of() : List.copyOf(tags);
-        }
-    }
 }

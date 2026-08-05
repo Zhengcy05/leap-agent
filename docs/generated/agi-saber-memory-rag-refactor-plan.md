@@ -41,6 +41,7 @@ Implemented in this pass:
 8. Neo4j memory graph projection for long-term memories: Memory nodes, FOLLOWS/SIMILAR_TO edges, graph-expanded recall, and centrality-aware TTL protection.
 9. Neo4j RAG knowledge graph projection: entity/relation extraction for chunks, KG graph recall, and Milvus/ES/KG RRF fusion.
 10. RAG rerank layer: DashScope dedicated rerank after PG hydrate only when the hydrated candidate pool has at least 20 items, with optional LLM listwise fallback and final RRF fallback.
+11. Long-term memory consolidation component: candidate dedup, semantic merge, importance decay, TTL pruning, graph centrality protection, and SIMILAR_TO edge creation moved out of the extraction/recall service.
 
 Deferred:
 

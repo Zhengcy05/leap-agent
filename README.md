@@ -365,7 +365,7 @@ curl -N -X POST http://localhost:9900/api/ai_ops
 - `ChatSessionService` 使用内存保存每个 session 的短期记忆，服务重启后 session 历史会丢失。
 - `PreferenceMemoryService` 会把全局偏好持久化到本地 JSON 文件，服务重启后会自动回放到进程内缓存。
 - RAG 文档分片以 PostgreSQL 为事实源，Milvus/Elasticsearch/Neo4j 分别作为语义、关键词和图谱投影索引，查询链路为 RRF 融合后回表；候选数达到 `min-rerank-candidates` 才走 DashScope 专用 rerank，专用 rerank 失败时可退到 LLM listwise 或 RRF。
-- `LongTermMemoryService` 推荐使用 PostgreSQL 作为长期记忆事实源，Milvus 后续只作为可选向量索引层。
+- `LongTermMemoryService` 负责长期记忆抽取、召回和持久化协调，`LongTermMemoryConsolidationService` 专管去重、合并、衰减、TTL 淘汰和图保护。
 - `SseEventSender` 是 SSE 事件格式化和发送的唯一入口。
 - `AgentToolRegistry` 是增删 Agent 工具的统一入口。
 - `application-example.yml` 可作为配置模板。

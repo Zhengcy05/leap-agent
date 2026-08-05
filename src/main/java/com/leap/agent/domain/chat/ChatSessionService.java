@@ -146,6 +146,13 @@ public class ChatSessionService {
         public long getCreateTime() {
             return createTime;
         }
+
+        /**
+         * 会话 ID 只读暴露给上层，用于长期记忆写回和调试。
+         */
+        public String getSessionId() {
+            return sessionId;
+        }
     }
 
     /**

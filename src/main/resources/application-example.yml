@@ -66,6 +66,38 @@ document:
 rag:
   top-k: 3  # 检索返回的最相似文档数量
   model: "qwen3-max"  # 大语言模型名称
+  postgres:
+    jdbc-url: jdbc:postgresql://localhost:5432/leap_agent
+    username: leap
+    password: leap
+    init-schema: true
+    chunk-table-name: rag_document_chunk
+  elasticsearch:
+    enabled: true
+    base-url: http://localhost:9200
+    index-name: leap_rag_chunks
+    timeout-millis: 5000
+  retrieval:
+    rrf-k: 60                # RRF 倒数融合算法的平滑常量 k，业界常用 50~60
+    fetch-multiplier: 2      # rerank 关闭时，每路召回候选池相对 topK 的放大倍数
+    rerank-enabled: true     # 是否启用 RRF 后的精排
+    rerank-provider: dashscope-rerank # dashscope-rerank 专用模型优先；也可设为 llm 或 none
+    rerank-pool-multiplier: 4 # rerank 开启时，每路召回候选池扩大到 topK 的 4 倍
+    min-rerank-candidates: 20 # PG hydrate 后候选数至少达到 20 条才触发精排
+    rerank-preview-len: 200  # 给 reranker 看的每条候选最大字符数
+    rerank-model: qwen3-vl-rerank # dashscope-rerank 默认专用模型；provider=llm 时可改为普通对话模型
+    rerank-base-url: https://dashscope.aliyuncs.com/api/v1
+    rerank-timeout-millis: 8000
+    rerank-llm-fallback-enabled: true # 专用 rerank 失败时是否退到普通 LLM listwise
+  knowledge-graph:
+    enabled: true
+    uri: bolt://localhost:7687
+    username: neo4j
+    password: leap
+    init-schema: true
+    max-hops: 2
+    weight: 1.0  # 权重系数
+    async-index-enabled: true
 
 # 记忆模块配置
 memory:
@@ -74,6 +106,37 @@ memory:
   preference:
     storage-path: ./data/preferences.json
     async-llm-enabled: true
+  long-term:
+    repository: postgres
+    storage-path: ./data/long-term-memory.json
+    postgres:
+      jdbc-url: jdbc:postgresql://localhost:5432/leap_agent
+      username: leap
+      password: leap
+      init-schema: true     # 自动初始化 检查数据表是否存在，无需手动建表 SQL
+      table-name: long_term_memory
+    graph:
+      enabled: true
+      uri: bolt://localhost:7687
+      username: neo4j
+      password: leap
+      init-schema: true
+      similarity-edge-threshold: 0.80  # 新记忆和近期记忆超过该相似度时建立 SIMILAR_TO
+      similar-scan-limit: 50           # 新增记忆时向前扫描多少条 active 记忆
+      neighbor-hops: 1                 # 召回 seed 通过图扩展的跳数
+      centrality-protect-in-degree: 3  # 入度达到该值时，TTL 淘汰会保护该记忆
+      graph-expanded-score: 0.45       # 图扩展命中的兜底召回分数
+    async-extraction-enabled: true
+    async-llm-enabled: true
+    prompt-top-k: 4
+    min-recall-score: 0.42      # 召回门槛
+    min-confidence: 0.7         # 记忆入库准入门槛
+    dedup-threshold: 0.92       # 记忆入库查重阈值
+    similarity-threshold: 0.80  # 记忆合并阈值
+    ttl-days: 30                # 记忆最大存活生命周期
+    decay-rate: 0.995           # 记忆重要性衰减系数 定期执行衰减任务：importance = importance * 0.995。
+    min-importance: 0.30        # 记忆最低重要性底线：当记忆重要度衰减到 ≤ 0.30，这条记忆会被清理删除，不再保留。
+    consolidation-trigger-interval: 5   # 记忆合并触发周期
 
 # Prometheus 配置
 prometheus:

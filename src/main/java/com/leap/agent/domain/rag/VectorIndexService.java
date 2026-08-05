@@ -18,9 +18,11 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.File;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.util.*;
 
@@ -41,6 +43,15 @@ public class VectorIndexService {
 
     @Autowired
     private DocumentChunkService chunkService;
+
+    @Autowired
+    private RagDocumentChunkRepository chunkRepository;
+
+    @Autowired
+    private ElasticsearchRagIndexService elasticsearchRagIndexService;
+
+    @Autowired
+    private Neo4jRagKnowledgeGraphService knowledgeGraphService;
 
     @Value("${file.upload.path}")
     private String uploadPath;
@@ -153,8 +164,16 @@ public class VectorIndexService {
                 // 构建元数据（包含文件信息）
                 Map<String, Object> metadata = buildMetadata(path.toString(), chunk, chunks.size());
 
-                // 插入到 Milvus
-                insertToMilvus(chunk.getContent(), vector, metadata, chunk.getChunkIndex());
+                // PG 是事实源：先保存完整 chunk，再写 Milvus/ES/Neo4j 这些可重建投影。
+                // 如果索引写入失败，PG 中仍保留事实；后续可以通过 reconcile/outbox 重新投影。
+                RagDocumentChunk storedChunk = chunkRepository.save(buildRagChunk(metadata, chunk, chunks.size()));
+                metadata.put("_chunk_id", storedChunk.getId());
+                metadata.put("_version", storedChunk.getVersion());
+                metadata.put("_content_hash", storedChunk.getContentHash());
+
+                insertToMilvus(storedChunk.getId(), vector, metadata);
+                elasticsearchRagIndexService.indexChunk(storedChunk);
+                knowledgeGraphService.indexChunkAsync(storedChunk);
                 
                 logger.info("✓ 分片 {}/{} 索引成功", i + 1, chunks.size());
 
@@ -176,6 +195,11 @@ public class VectorIndexService {
             // 将系统路径转换为统一格式
             Path path = Paths.get(filePath).normalize();
             String normalizedPath = path.toString().replace(File.separator, "/");
+            // 删除采用“PG 先 tombstone，索引后清理”的顺序。查询回 PG hydrate 时会过滤 DELETED，
+            // 所以即使 Milvus/ES/Neo4j 删除延迟，也不会把旧分片注入 prompt。
+            chunkRepository.markSourceDeleted(normalizedPath);
+            elasticsearchRagIndexService.deleteBySource(normalizedPath);
+            knowledgeGraphService.deleteBySource(normalizedPath);
             
             // 构建删除表达式：metadata["_source"] == "xxx"
             String expr = String.format("metadata[\"_source\"] == \"%s\"", normalizedPath);
@@ -249,11 +273,33 @@ public class VectorIndexService {
         return metadata;
     }
 
+    private RagDocumentChunk buildRagChunk(Map<String, Object> metadata, DocumentChunk chunk, int totalChunks) {
+        RagDocumentChunk ragChunk = new RagDocumentChunk();
+        String source = (String) metadata.get("_source");
+        int chunkIndex = chunk.getChunkIndex();
+        String id = stableChunkId(source, chunkIndex);
+        String contentHash = sha256(chunk.getContent());
+        // 稳定 id 让同一个 source + chunkIndex 覆盖更新；content_hash/version 让后续索引一致性巡检可比较。
+        metadata.put("_chunk_id", id);
+        metadata.put("_content_hash", contentHash);
+        ragChunk.setId(id);
+        ragChunk.setSource(source);
+        ragChunk.setFileName((String) metadata.get("_file_name"));
+        ragChunk.setExtension((String) metadata.get("_extension"));
+        ragChunk.setChunkIndex(chunkIndex);
+        ragChunk.setTotalChunks(totalChunks);
+        ragChunk.setTitle(chunk.getTitle());
+        ragChunk.setContent(chunk.getContent());
+        ragChunk.setContentHash(contentHash);
+        ragChunk.setMetadata(new LinkedHashMap<>(metadata));
+        ragChunk.setStatus("ACTIVE");
+        return ragChunk;
+    }
+
     /**
      * 插入向量到 Milvus
      */
-    private void insertToMilvus(String content, List<Float> vector, 
-                                Map<String, Object> metadata, int chunkIndex) throws Exception {
+    private void insertToMilvus(String id, List<Float> vector, Map<String, Object> metadata) throws Exception {
         try {
             // 确保 collection 已加载
             R<RpcStatus> loadResponse = milvusClient.loadCollection(
@@ -266,18 +312,15 @@ public class VectorIndexService {
                 throw new RuntimeException("加载 collection 失败: " + loadResponse.getMessage());
             }
 
-            // 生成唯一 ID（使用 _source + 分片索引）
-            String source = (String) metadata.get("_source");
-            String id = UUID.nameUUIDFromBytes((source + "_" + chunkIndex).getBytes()).toString();
-
             // 构建字段数据
             List<InsertParam.Field> fields = new ArrayList<>();
             
             // ID 字段
             fields.add(new InsertParam.Field("id", Collections.singletonList(id)));
             
-            // content 字段
-            fields.add(new InsertParam.Field("content", Collections.singletonList(content)));
+            // content 字段仅保留预览，完整事实必须回 PostgreSQL 按 id 读取。
+            // 保留字段是为了兼容当前 Milvus collection schema，避免本轮重建 collection。
+            fields.add(new InsertParam.Field("content", Collections.singletonList("")));
             
             // vector 字段
             fields.add(new InsertParam.Field("vector", Collections.singletonList(vector)));
@@ -300,11 +343,29 @@ public class VectorIndexService {
                 throw new RuntimeException("插入向量失败: " + insertResponse.getMessage());
             }
 
-            logger.debug("向量插入成功: id={}, source={}, chunk={}", id, source, chunkIndex);
+            logger.debug("向量插入成功: id={}, source={}", id, metadata.get("_source"));
 
         } catch (Exception e) {
             logger.error("插入向量到 Milvus 失败", e);
             throw e;
+        }
+    }
+
+    private String stableChunkId(String source, int chunkIndex) {
+        return UUID.nameUUIDFromBytes((source + "_" + chunkIndex).getBytes(StandardCharsets.UTF_8)).toString();
+    }
+
+    private String sha256(String content) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest((content == null ? "" : content).getBytes(StandardCharsets.UTF_8));
+            StringBuilder builder = new StringBuilder(hash.length * 2);
+            for (byte b : hash) {
+                builder.append(String.format("%02x", b));
+            }
+            return builder.toString();
+        } catch (Exception e) {
+            return Integer.toHexString(Objects.hashCode(content));
         }
     }
 

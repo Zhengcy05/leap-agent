@@ -17,6 +17,8 @@ import com.leap.agent.common.model.SessionInfoResponse;
 import com.leap.agent.domain.aiops.AiOpsService;
 import com.leap.agent.domain.chat.ChatSessionService;
 import com.leap.agent.domain.chat.ChatService;
+import com.leap.agent.domain.memory.longterm.LongTermMemoryService;
+import com.leap.agent.domain.memory.longterm.Neo4jMemoryGraphClient;
 import com.leap.agent.domain.memory.preference.PreferenceMemoryService;
 import com.leap.agent.domain.memory.shortterm.ShortTermMemorySnapshot;
 import org.slf4j.Logger;
@@ -53,6 +55,9 @@ public class ChatController {
 
     @Autowired
     private PreferenceMemoryService preferenceMemoryService;
+
+    @Autowired
+    private LongTermMemoryService longTermMemoryService;
 
     @Autowired
     private SseEventSender sseEventSender;
@@ -97,7 +102,8 @@ public class ChatController {
             String systemPrompt = chatService.buildSystemPrompt(
                     history,
                     preferenceMemoryService.snapshot(),
-                    preferenceMemoryService.promptPreferenceItems()
+                    preferenceMemoryService.promptPreferenceItems(),
+                    longTermMemoryService.buildPromptSection(request.getQuestion())
             );
             
             // 创建 ReactAgent
@@ -108,6 +114,7 @@ public class ChatController {
             
             // 更新会话历史
             session.addMessage(request.getQuestion(), fullAnswer);
+            longTermMemoryService.recordTurnAsync(session.getSessionId(), request.getQuestion(), fullAnswer);
             preferenceMemoryService.extractPreferencesAsync(request.getQuestion(), ruleBasedPreferences);
             logger.info("已更新会话历史 - SessionId: {}, 当前消息对数: {}", 
                 request.getId(), session.getMessagePairCount());
@@ -193,7 +200,8 @@ public class ChatController {
                 String systemPrompt = chatService.buildSystemPrompt(
                         history,
                         preferenceMemoryService.snapshot(),
-                        preferenceMemoryService.promptPreferenceItems()
+                        preferenceMemoryService.promptPreferenceItems(),
+                        longTermMemoryService.buildPromptSection(request.getQuestion())
                 );
                 
                 // 创建 ReactAgent
@@ -260,6 +268,7 @@ public class ChatController {
                             
                             // 更新会话历史
                             session.addMessage(request.getQuestion(), fullAnswer);
+                            longTermMemoryService.recordTurnAsync(session.getSessionId(), request.getQuestion(), fullAnswer);
                             preferenceMemoryService.extractPreferencesAsync(request.getQuestion(), ruleBasedPreferences);
                             logger.info("已更新会话历史 - SessionId: {}, 当前消息对数: {}", 
                                 request.getId(), session.getMessagePairCount());
@@ -396,7 +405,7 @@ public class ChatController {
     }
 
     /**
-     * 查看短期记忆与全局偏好快照。
+     * 查看短期记忆、全局偏好与长期记忆快照。
      */
     @GetMapping("/chat/memory")
     public ResponseEntity<ApiResponse<MemoryDebugResponse>> getMemoryDebugInfo(
@@ -427,6 +436,7 @@ public class ChatController {
                         snapshot.memory().messages());
             }
 
+            Map<String, Neo4jMemoryGraphClient.GraphStats> graphStats = longTermMemoryService.graphStatsSnapshot();
             MemoryDebugResponse response = new MemoryDebugResponse(
                     preferenceMemoryService.snapshot(),
                     preferenceMemoryService.snapshotEntries().entrySet().stream()
@@ -435,6 +445,9 @@ public class ChatController {
                                     LinkedHashMap::putAll),
                     preferenceMemoryService.snapshotPreferenceItems().stream()
                             .map(MemoryDebugResponse.PreferenceItemView::from)
+                            .toList(),
+                    longTermMemoryService.snapshot().stream()
+                            .map(entry -> MemoryDebugResponse.LongTermMemoryView.from(entry, graphStats.get(entry.getId())))
                             .toList(),
                     sessions,
                     sessionDetail
